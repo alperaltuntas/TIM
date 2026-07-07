@@ -106,6 +106,38 @@ pass"). Every entry cites how it was established (spike test, run, measurement).
   reads (First_direction, DTBT). Corner, 4d, and read_vector paths await a
   consumer (cesm_t232).
 
+## Q3b — Write path (restart writes)
+
+- **WRITE GATE PASSED** (double_gyre, 4 ranks, symmetric, gnu): with TIM_IO_WRITE=1
+  the entire MOM_io_infra write seam (open_file/write_metadata_axis/field/global/
+  MOM_write_axis/write_field_0d..4d/close) routes through TIM/PIO. Full cross matrix
+  bit-identical: TIM-written restart data+attrs == FMS's (only diff: FMS's legacy
+  NumFilesInSet global att, intentionally dropped); FMS-reads-TIM-written and
+  TIM-reads-TIM-written continuations bit-identical to control through day 30 incl.
+  byte-identical day-30 restarts.
+- Write decompositions must be TRUE PARTITIONS (PIO forbids overlap on writes too):
+  staggered vars use main block + extra east/north point on the east/north-most rank
+  only — a third decomp family beside the read components.
+- A variable's staggering at write time is implicit in its registered dims — the file
+  handle registry must remember each axis's kind/position (this is state the production
+  File abstraction owns naturally).
+- PIO createfile defaults to CLASSIC; pass PIO_64BIT_OFFSET to match FMS output format.
+- Seam gotchas found: open_file allocates the FMS fileobj before any dispatch decision —
+  TIM-owned closes must not let fms2_close_file touch the never-opened object; and
+  changing file_type's layout requires wiping the MOM6-stage build dirs (mkmf does not
+  track cross-stage .mod dependencies — stale objects segfault).
+
+## Q6 addendum — 768-rank read result (cesm_t232)
+
+- At 768 ranks (batch, premium): FMS 3.151 s vs TIM 4.683 s max — **TIM 1.5x SLOWER**,
+  reversing the 128-rank result (TIM 2x faster). Correctness still bit-identical.
+  Suspects: default iotasks = nprocs/4 = 192 (likely far too many for ~2 GB of reads;
+  rearranger fan-in overhead), and 51 collective PIOc_openfile/close cycles.
+  Production design implication: iotask count must scale with DATA VOLUME, not rank
+  count, and file opens should be amortized (MOM_restart reads ~50 vars from ONE file —
+  the prototype reopens per read; the production File abstraction naturally holds the
+  file open). Tuning runs queued (TIM_PIO_NTASKS sweep).
+
 ## Q4 — FMS diag semantics (windows, average_T1/T2, accumulation order)
 
 - TBD.

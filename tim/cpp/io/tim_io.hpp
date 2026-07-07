@@ -46,5 +46,25 @@ void finalize();   // PIOc_finalize (idempotent)
 
 int iosysId();     // the PIO iosystem id (for tests)
 
+// ---- write path (stateful file handles) ----
+// mode: 0 write, 1 overwrite, 2 append. kind: 0=x, 1=y, 2=unlimited, 3=fixed.
+int createFile(const std::string& path, int domain_handle, int mode);
+int defAxis(int fh, const std::string& name, int kind, int position, int n,
+            const std::string& units, const std::string& longname,
+            const std::string& cartesian, int sense, int has_sense);
+int defVar(int fh, const std::string& name, const std::string& dims_joined,
+           const std::string& units, const std::string& longname,
+           const std::string& std_name, int pack, const std::string& checksum);
+int putGlobalAtt(int fh, const std::string& name, const std::string& value);
+int writeAxis(int fh, const std::string& name, const double* data, int n);
+int varStagger(int fh, const std::string& name);
+int writeDecomposed(int fh, const std::string& name, const double* buf,
+                    double tstamp, int has_tstamp);
+int writePlain(int fh, const std::string& name, const double* data, int n,
+               double tstamp, int has_tstamp);
+int closeFile(int fh);
+int fileNumTimes(int fh);
+double fileTime(int fh);
+
 }  // namespace IO
 }  // namespace TIM

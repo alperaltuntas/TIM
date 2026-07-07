@@ -307,10 +307,330 @@ bool findVar(const std::string& path, const std::string& varname,
   return true;
 }
 
+// ------------------------------------------------------------ write path ---
+// Stateful write files: MOM registers axes (dims + coordinate vars + attrs),
+// then variables (dims by axis name), then writes axis values and field data.
+// The variable's staggering and z-extent are implicit in its registered dims,
+// so the file registry remembers each axis's kind.
+
+struct WAxis {
+  int kind = 3;      // 0=x, 1=y, 2=unlimited(time), 3=fixed length
+  int position = 0;  // Stagger for x/y axes (CENTER/EAST_FACE/NORTH_FACE)
+  int len = 0;       // global length for fixed axes
+};
+struct WVar {
+  int stagger = CENTER;
+  int nz = 1, nz2 = 1;   // trailing extents (product of fixed dims; nz2 = 4th)
+  bool has_time = false;
+};
+struct WFile {
+  int ncid = -1;
+  int domain_handle = -1;
+  bool in_def = true;
+  int num_times = 0;
+  double file_time = 0.0;
+  std::string unlim_name;
+  std::map<std::string, WAxis> axes;
+  std::map<std::string, WVar> vars;
+};
+static std::vector<WFile> wfiles;
+
+// Write partition: every global point exactly once. Staggered (+1) axes give
+// the extra east/north point to the east/north-most rank only (unlike the
+// overlapping READ windows). kind flag separates these decomps in the cache.
+static int getWriteDecomp(int domain_handle, int stagger, int nz, int nz2) {
+  const long long key = (1LL << 60) | ((long long)domain_handle << 44) |
+                        ((long long)stagger << 40) | ((long long)nz2 << 20) | nz;
+  auto it = decomp_cache.find(key);
+  if (it != decomp_cache.end()) return it->second;
+
+  const DomainInfo& d = domains[(size_t)domain_handle];
+  const bool sx = (stagger == EAST_FACE || stagger == CORNER) && d.symmetric;
+  const bool sy = (stagger == NORTH_FACE || stagger == CORNER) && d.symmetric;
+  const int gnx = d.nig + (sx ? 1 : 0), gny = d.njg + (sy ? 1 : 0);
+  const int is = d.isc, ie = d.iec + ((sx && d.iec == d.nig) ? 1 : 0);
+  const int js = d.jsc, je = d.jec + ((sy && d.jec == d.njg) ? 1 : 0);
+
+  std::vector<PIO_Offset> dof;
+  dof.reserve((size_t)(ie - is + 1) * (je - js + 1) * nz);
+  for (int k = 0; k < nz; ++k)
+    for (int j = js; j <= je; ++j)
+      for (int i = is; i <= ie; ++i)
+        dof.push_back((PIO_Offset)k * gnx * gny + (PIO_Offset)(j - 1) * gnx + i);
+
+  const int nz1 = (nz2 > 1) ? nz / nz2 : nz;
+  int gdims[4] = {gny, gnx, 0, 0};
+  int ndims = 2;
+  if (nz2 > 1) {
+    ndims = 4; gdims[0] = nz2; gdims[1] = nz1; gdims[2] = gny; gdims[3] = gnx;
+  } else if (nz > 1) {
+    ndims = 3; gdims[0] = nz; gdims[1] = gny; gdims[2] = gnx;
+  }
+  static PIO_Offset dummy = 0;
+  int ioid, rearr = PIO_REARR_BOX;
+  int rc = PIOc_InitDecomp(iosysid, PIO_DOUBLE, ndims, gdims, (int)dof.size(),
+                           dof.empty() ? &dummy : dof.data(), &ioid, &rearr,
+                           nullptr, nullptr);
+  if (rc != PIO_NOERR) {
+    std::fprintf(stderr, "tim_io: write InitDecomp failed rc=%d\n", rc);
+    MPI_Abort(MPI_COMM_WORLD, 1);
+  }
+  decomp_cache[key] = ioid;
+  return ioid;
+}
+
+static void endDef(WFile& w) {
+  if (w.in_def) { PIOc_enddef(w.ncid); w.in_def = false; }
+}
+
+int createFile(const std::string& path, int domain_handle, int mode) {
+  ensureInit();
+  WFile w;
+  w.domain_handle = domain_handle;
+  int iotype = PIO_IOTYPE_PNETCDF;
+  int rc;
+  if (mode == 2) {  // append: recover record state, reenter define mode
+    rc = PIOc_openfile(iosysid, &w.ncid, &iotype, path.c_str(), PIO_WRITE);
+    if (rc == PIO_NOERR) {
+      int unlimdim = -1;
+      PIOc_inq_unlimdim(w.ncid, &unlimdim);
+      if (unlimdim >= 0) {
+        char uname[PIO_MAX_NAME + 1] = {0};
+        PIO_Offset ulen = 0;
+        PIOc_inq_dim(w.ncid, unlimdim, uname, &ulen);
+        w.unlim_name = uname;
+        w.num_times = (int)ulen;
+        if (ulen > 0) {
+          int uvar = -1;
+          if (PIOc_inq_varid(w.ncid, uname, &uvar) == PIO_NOERR) {
+            PIO_Offset s = ulen - 1, c = 1;
+            PIOc_get_vara_double(w.ncid, uvar, &s, &c, &w.file_time);
+          }
+        }
+      }
+      w.in_def = false;
+    }
+  } else {  // write / overwrite: clobber (FMS "write" on new files behaves so)
+    rc = PIOc_createfile(iosysid, &w.ncid, &iotype, path.c_str(),
+                         PIO_CLOBBER | PIO_64BIT_OFFSET);  // match FMS format
+  }
+  if (rc != PIO_NOERR) {
+    std::fprintf(stderr, "tim_io: create/open %s (mode %d) rc=%d\n",
+                 path.c_str(), mode, rc);
+    return -1;
+  }
+  wfiles.push_back(w);
+  return (int)wfiles.size() - 1;
+}
+
+// Define a dim + its coordinate variable with attributes. kind/position per
+// WAxis; n is the global length for fixed axes (z etc.) and for decomposed
+// axes (which get gnx/gny+shift from the domain).
+int defAxis(int fh, const std::string& name, int kind, int position, int n,
+            const std::string& units, const std::string& longname,
+            const std::string& cartesian, int sense, int has_sense) {
+  WFile& w = wfiles[(size_t)fh];
+  const DomainInfo& d = domains[(size_t)w.domain_handle];
+  int dimid, len = n;
+  if (kind == 0) len = d.nig + ((position == EAST_FACE || position == CORNER) &&
+                                d.symmetric ? 1 : 0);
+  if (kind == 1) len = d.njg + ((position == NORTH_FACE || position == CORNER) &&
+                                d.symmetric ? 1 : 0);
+  int rc = PIOc_def_dim(w.ncid, name.c_str(),
+                        kind == 2 ? PIO_UNLIMITED : (PIO_Offset)len, &dimid);
+  if (rc != PIO_NOERR) return rc;
+  int varid;
+  rc = PIOc_def_var(w.ncid, name.c_str(), PIO_DOUBLE, 1, &dimid, &varid);
+  if (rc != PIO_NOERR) return rc;
+  if (!longname.empty())
+    PIOc_put_att_text(w.ncid, varid, "long_name", longname.size(), longname.c_str());
+  if (!units.empty())
+    PIOc_put_att_text(w.ncid, varid, "units", units.size(), units.c_str());
+  if (!cartesian.empty())
+    PIOc_put_att_text(w.ncid, varid, "cartesian_axis", cartesian.size(),
+                      cartesian.c_str());
+  if (has_sense)
+    PIOc_put_att_int(w.ncid, varid, "sense", PIO_INT, 1, &sense);
+  WAxis a; a.kind = kind; a.position = position; a.len = len;
+  w.axes[name] = a;
+  if (kind == 2) w.unlim_name = name;
+  return PIO_NOERR;
+}
+
+// Register a variable; dims given as a '\n'-joined list of axis names,
+// x/y/time kinds inferred from the axis registry.
+int defVar(int fh, const std::string& name, const std::string& dims_joined,
+           const std::string& units, const std::string& longname,
+           const std::string& std_name, int pack, const std::string& checksum) {
+  WFile& w = wfiles[(size_t)fh];
+  std::vector<std::string> dims;
+  size_t p = 0;
+  while (p < dims_joined.size()) {
+    size_t q = dims_joined.find('\n', p);
+    if (q == std::string::npos) q = dims_joined.size();
+    if (q > p) dims.push_back(dims_joined.substr(p, q - p));
+    p = q + 1;
+  }
+  WVar v;
+  std::vector<int> dimids;
+  int sx = 0, sy = 0;
+  std::vector<int> zlens;
+  for (const auto& dn : dims) {
+    int dimid;
+    if (PIOc_inq_dimid(w.ncid, dn.c_str(), &dimid) != PIO_NOERR) return -1;
+    dimids.push_back(dimid);
+    const WAxis& a = w.axes[dn];
+    if (a.kind == 0 && (a.position == EAST_FACE || a.position == CORNER)) sx = 1;
+    if (a.kind == 1 && (a.position == NORTH_FACE || a.position == CORNER)) sy = 1;
+    if (a.kind == 2) v.has_time = true;
+    if (a.kind == 3) zlens.push_back(a.len);
+  }
+  v.stagger = sx && sy ? CORNER : sx ? EAST_FACE : sy ? NORTH_FACE : CENTER;
+  v.nz = 1;
+  for (int zl : zlens) v.nz *= zl;
+  v.nz2 = (zlens.size() > 1) ? zlens.back() : 1;
+  // netCDF wants dims slowest-first; MOM passes axes in Fortran order (x first)
+  std::vector<int> cdims(dimids.rbegin(), dimids.rend());
+  int varid;
+  int rc = PIOc_def_var(w.ncid, name.c_str(), pack > 1 ? PIO_FLOAT : PIO_DOUBLE,
+                        (int)cdims.size(), cdims.data(), &varid);
+  if (rc != PIO_NOERR) return rc;
+  if (!longname.empty())
+    PIOc_put_att_text(w.ncid, varid, "long_name", longname.size(), longname.c_str());
+  if (!units.empty())
+    PIOc_put_att_text(w.ncid, varid, "units", units.size(), units.c_str());
+  if (!std_name.empty())
+    PIOc_put_att_text(w.ncid, varid, "standard_name", std_name.size(),
+                      std_name.c_str());
+  if (!checksum.empty())
+    PIOc_put_att_text(w.ncid, varid, "checksum", checksum.size(), checksum.c_str());
+  w.vars[name] = v;
+  return PIO_NOERR;
+}
+
+int putGlobalAtt(int fh, const std::string& name, const std::string& value) {
+  WFile& w = wfiles[(size_t)fh];
+  return PIOc_put_att_text(w.ncid, PIO_GLOBAL, name.c_str(), value.size(),
+                           value.c_str());
+}
+
+// Write coordinate values (global; identical on all ranks; collective).
+int writeAxis(int fh, const std::string& name, const double* data, int n) {
+  WFile& w = wfiles[(size_t)fh];
+  endDef(w);
+  int varid;
+  int rc = PIOc_inq_varid(w.ncid, name.c_str(), &varid);
+  if (rc != PIO_NOERR) return rc;
+  PIO_Offset s = 0, c = n;
+  return PIOc_put_vara_double(w.ncid, varid, &s, &c, data);
+}
+
+// FMS write_time_if_later semantics: advance the record when t is newer.
+static int frameForTime(WFile& w, double t, bool has_tstamp) {
+  if (!has_tstamp) return -1;
+  if (t > w.file_time || w.num_times == 0) {
+    w.file_time = t;
+    w.num_times += 1;
+    if (!w.unlim_name.empty()) {
+      int uvar;
+      if (PIOc_inq_varid(w.ncid, w.unlim_name.c_str(), &uvar) == PIO_NOERR) {
+        PIO_Offset s = w.num_times - 1, c = 1;
+        PIOc_put_vara_double(w.ncid, uvar, &s, &c, &t);
+      }
+    }
+  }
+  return w.num_times - 1;
+}
+
+// stagger for a registered variable (Fortran needs it to size the window).
+int varStagger(int fh, const std::string& name) {
+  WFile& w = wfiles[(size_t)fh];
+  auto it = w.vars.find(name);
+  return it == w.vars.end() ? -1 : it->second.stagger;
+}
+
+// Decomposed write from the caller's staggered window buffer (same layout as
+// the read window: [isc..iec+sx] x [jsc..jec+sy], x fastest). The partition
+// subset is gathered out of the window.
+int writeDecomposed(int fh, const std::string& name, const double* buf,
+                    double tstamp, int has_tstamp) {
+  WFile& w = wfiles[(size_t)fh];
+  auto it = w.vars.find(name);
+  if (it == w.vars.end()) return -1;
+  const WVar& v = it->second;
+  endDef(w);
+  int varid;
+  int rc = PIOc_inq_varid(w.ncid, name.c_str(), &varid);
+  if (rc != PIO_NOERR) return rc;
+  const int frame = frameForTime(w, tstamp, has_tstamp != 0);
+  if (v.has_time && frame >= 0) PIOc_setframe(w.ncid, varid, frame);
+
+  const DomainInfo& d = domains[(size_t)w.domain_handle];
+  const bool sx = (v.stagger == EAST_FACE || v.stagger == CORNER) && d.symmetric;
+  const bool sy = (v.stagger == NORTH_FACE || v.stagger == CORNER) && d.symmetric;
+  const int wni = d.iec - d.isc + 1 + (sx ? 1 : 0);
+  const int wnj = d.jec - d.jsc + 1 + (sy ? 1 : 0);
+  const int ie = d.iec + ((sx && d.iec == d.nig) ? 1 : 0);
+  const int je = d.jec + ((sy && d.jec == d.njg) ? 1 : 0);
+  const int ni = ie - d.isc + 1, nj = je - d.jsc + 1;
+
+  std::vector<double> part((size_t)ni * nj * v.nz);
+  for (int k = 0; k < v.nz; ++k)
+    for (int j = 0; j < nj; ++j)
+      for (int i = 0; i < ni; ++i)
+        part[(size_t)k * ni * nj + (size_t)j * ni + i] =
+            buf[(size_t)k * wni * wnj + (size_t)j * wni + i];
+
+  int ioid = getWriteDecomp(w.domain_handle, v.stagger, v.nz, v.nz2);
+  static double dummyd = 0.0;
+  rc = PIOc_write_darray(w.ncid, varid, ioid, (PIO_Offset)part.size(),
+                         part.empty() ? &dummyd : part.data(), nullptr);
+  if (rc != PIO_NOERR)
+    std::fprintf(stderr, "tim_io: write_darray(%s) rc=%d\n", name.c_str(), rc);
+  if (debugOn() && amRoot())
+    std::fprintf(stderr, "TIM_IO write_dd %s stag=%d nz=%d frame=%d rc=%d\n",
+                 name.c_str(), v.stagger, v.nz, frame, rc);
+  return rc;
+}
+
+// Non-decomposed (0d/1d) write; values identical on all ranks; collective.
+int writePlain(int fh, const std::string& name, const double* data, int n,
+               double tstamp, int has_tstamp) {
+  WFile& w = wfiles[(size_t)fh];
+  endDef(w);
+  int varid;
+  int rc = PIOc_inq_varid(w.ncid, name.c_str(), &varid);
+  if (rc != PIO_NOERR) return rc;
+  const int frame = frameForTime(w, tstamp, has_tstamp != 0);
+  const bool has_t = w.vars.count(name) ? w.vars[name].has_time : false;
+  PIO_Offset start[2] = {0, 0}, count[2] = {1, 1};
+  int nd = 1;
+  if (has_t && frame >= 0) { start[0] = frame; count[1] = n; nd = 2; }
+  else count[0] = n;
+  (void)nd;
+  if (debugOn() && amRoot())
+    std::fprintf(stderr, "TIM_IO write_pl %s n=%d frame=%d\n", name.c_str(), n,
+                 frame);
+  return PIOc_put_vara_double(w.ncid, varid, start, count, data);
+}
+
+int closeFile(int fh) {
+  WFile& w = wfiles[(size_t)fh];
+  if (w.ncid < 0) return 0;
+  endDef(w);
+  int rc = PIOc_closefile(w.ncid);
+  w.ncid = -1;
+  return rc;
+}
+
+int fileNumTimes(int fh) { return wfiles[(size_t)fh].num_times; }
+double fileTime(int fh) { return wfiles[(size_t)fh].file_time; }
+
 void finalize() {
   if (iosysid >= 0) { PIOc_finalize(iosysid); iosysid = -1; }
   decomp_cache.clear();
   domains.clear();
+  wfiles.clear();
 }
 
 }  // namespace IO
@@ -348,5 +668,52 @@ int tim_io_var_exists(const char* path, const char* varname) {
 }
 
 void tim_io_finalize() { TIM::IO::finalize(); }
+
+/* ---- write path ---- */
+
+int tim_io_createfile(const char* path, int domain_handle, int mode) {
+  return TIM::IO::createFile(path, domain_handle, mode);
+}
+
+int tim_io_def_axis(int fh, const char* name, int kind, int position, int n,
+                    const char* units, const char* longname,
+                    const char* cartesian, int sense, int has_sense) {
+  return TIM::IO::defAxis(fh, name, kind, position, n, units, longname,
+                          cartesian, sense, has_sense);
+}
+
+int tim_io_def_var(int fh, const char* name, const char* dims_joined,
+                   const char* units, const char* longname,
+                   const char* std_name, int pack, const char* checksum) {
+  return TIM::IO::defVar(fh, name, dims_joined, units, longname, std_name,
+                         pack, checksum);
+}
+
+int tim_io_put_global_att(int fh, const char* name, const char* value) {
+  return TIM::IO::putGlobalAtt(fh, name, value);
+}
+
+int tim_io_write_axis(int fh, const char* name, const double* data, int n) {
+  return TIM::IO::writeAxis(fh, name, data, n);
+}
+
+int tim_io_var_stagger(int fh, const char* name) {
+  return TIM::IO::varStagger(fh, name);
+}
+
+int tim_io_write_decomposed(int fh, const char* name, const double* buf,
+                            double tstamp, int has_tstamp) {
+  return TIM::IO::writeDecomposed(fh, name, buf, tstamp, has_tstamp);
+}
+
+int tim_io_write_plain(int fh, const char* name, const double* data, int n,
+                       double tstamp, int has_tstamp) {
+  return TIM::IO::writePlain(fh, name, data, n, tstamp, has_tstamp);
+}
+
+int tim_io_closefile(int fh) { return TIM::IO::closeFile(fh); }
+
+int tim_io_file_num_times(int fh) { return TIM::IO::fileNumTimes(fh); }
+double tim_io_file_time(int fh) { return TIM::IO::fileTime(fh); }
 
 }  // extern "C"
