@@ -1,0 +1,113 @@
+# Prototype findings — TIM diagnostics & I/O
+
+Accumulating answers to the six exit questions in `tim_diag_io_plan.md` ("Prototype
+pass"). Every entry cites how it was established (spike test, run, measurement).
+
+## Q1 — PIO ergonomics
+
+- **Module resolution (Derecho, ncarenv/25.10):** `parallelio/2.6.8` loads for
+  intel/2025.2.1, gcc/14.3.0, nvhpc/25.9 but **requires `cray-mpich` loaded first**
+  (a `module --force purge` environment fails; `module reset` environments are fine
+  because cray-mpich is in the default set). Loading it auto-pulls
+  `parallel-netcdf/1.14.1`. The module sets `NCAR_ROOT_PARALLELIO` (also `$PIO`);
+  lib is `libpioc` (+`libpiof`, unused by us). Confirmed the cray-mpich (parallel)
+  spack hash resolves, not the mpi-serial one.
+- **Build:** compile/link with the `CC` craype wrapper: `-I$NCAR_ROOT_PARALLELIO/include
+  -L$NCAR_ROOT_PARALLELIO/lib -lpioc`. Gotcha: ncarcompilers exports `CXX=icpx` into the
+  environment, which silently overrides Makefile `CXX ?= CC` defaults — and bare `icpx`
+  does not add MPI paths. Use `CC` explicitly.
+- **Zero-cell (all-land) ranks:** `PIOc_InitDecomp` returns `PIO_EINVAL` (-36) if the
+  compmap pointer is NULL, even with `maplen == 0` — an empty `std::vector::data()` is
+  NULL, so a zero-maplen rank crashes unless a valid dummy pointer is passed. Same
+  hazard for `write_darray`/`read_darray` buffers. The TIM backend seam must guard
+  every pointer it forwards for the empty-rank case (cesm_t232's masked layout makes
+  this a first-class path, not an edge case). Found via spike job 6657125.
+- **Spike results (4 ranks, 2×2 layout, 8×6 global; job 6657147): ALL 12 PASS.**
+  - Bitwise write→reopen→read roundtrips for {PNETCDF, NETCDF4P, NETCDF-serial} ×
+    {BOX, SUBSET}.
+  - Masked decomp (global holes + one zero-maplen rank) correct on PNETCDF/BOX and
+    /SUBSET; unmapped cells receive the fill value passed to `PIOc_write_darray`
+    (verified via collective `PIOc_get_vara_double`, whose result is valid on all
+    ranks — usable for replicated reads).
+  - Symmetric corner var (nx+1, ny+1; +1 row/col owned by edge ranks) roundtrips.
+  - Append: `PIOc_openfile(PIO_WRITE)` + `inq_dimlen(time)` + `setframe(nrec)` +
+    `write_darray` grows the record dim correctly on PNETCDF and NETCDF4P.
+  - `PIO_RETURN_ERROR` mode: missing file → rc=-49, missing var → error code, library
+    remains fully usable afterward. Error-code model is workable for optional-open
+    semantics.
+  - Still open within Q1: append to an *FMS-written* file (test when the spine reads
+    real double_gyre output); behavior at 768 ranks (Q6).
+- **Build-system note:** turbo-stack `list_paths` sweeps the whole TIM tree, so
+  `prototype/pio_spike/main.cpp` (with its `main()`) will land in libTIM.a path_names.
+  Archive members are pulled on demand so it is probably harmless, but verify on the
+  first full `--infra TIM` build; if it collides, exclude `prototype/` from list_paths.
+  Matrix: {PNETCDF, NETCDF4P, NETCDF-serial} × {BOX, SUBSET} roundtrips;
+  masked map with global holes + one zero-maplen rank; symmetric corner var
+  (nx+1, ny+1); append to existing file (PNETCDF + NETCDF4P); PIO_RETURN_ERROR
+  ergonomics (missing file/var, library usable afterward).
+
+- **Overlapping decomposition maps are FORBIDDEN in PIO — violently.**
+  FMS fills every rank's full staggered compute window ([isc..iec+1], overlapping
+  at shared edges via mpp_get_compute_domain's position shift on EVERY rank).
+  Attempting to express that as a PIO decomp: `PIOc_InitDecomp` and
+  `PIOc_InitDecomp_ReadOnly` return PIO_EINVAL on some ranks, and the BOX
+  rearranger can heap-corrupt (glibc malloc abort) — verified by
+  `prototype/pio_spike/probe_overlap.cpp`. **Solution: read each staggered window
+  as up to 4 strictly disjoint pieces** (main block, east strip [iec+1]×[jsc..jec],
+  north strip, NE point), each a cached decomp; strips are disjoint across ranks
+  by construction. Production TIM::IO must bake this in.
+- **MILESTONE PASSED — "TIM reads a MOM6 restart"** (double_gyre, 4 ranks,
+  symmetric memory, gnu): restart continuation day 10→20 with all read_field_2d/3d
+  traffic through TIM/PIO vs FMS control → `ocean.stats` bit-identical, final
+  restarts byte-identical. Staggered (u/v) reads exercised the 4-piece scheme.
+- **Pre-existing TIM bug found (NOT ours, needs separate fix):** restart
+  continuation fails out-of-the-box on the TIM build — MOM_restart's stored
+  field checksums (computed via the C++ TIM::checksum through mom_chksum) do not
+  match on restore, even FMS-write→FMS-read with the same binary (h: stored
+  3C51BC9E... vs recomputed DAF4DF94...). Restart runs evidently never exercised
+  on this stack. Milestone runs used RESTART_CHECKSUMS_REQUIRED=False. Suspect
+  TIM::checksum vs FMS mpp_chksum semantics (masking/unscale/window). File as an
+  issue against tim_coms_infra.
+- **Build gotcha:** mkmf's MOM6 link target does not depend on libTIM.a /
+  libinfra-TIM.a — after a library-only change the binary silently stays stale;
+  delete the MOM6 binary (or touch an object) to force relink.
+
+## Q2 — C API shape (bind(C) surface)
+
+- **Symmetric staggered decomposition convention (must match FMS to read its
+  files):** staggered axis has nig+1 file points; file index p ↔ MOM global
+  staggered index I = p−1; each rank owns p ∈ [isc, iec] and the east/north-most
+  rank additionally owns p = nig+1. Interior ranks' high-edge staggered points are
+  not read — MOM fills them by halo update afterward (same as FMS behavior).
+  Payoff: the Fortran-side copy offset into caller arrays becomes uniform —
+  0 for compute-sized arrays, isc−isd for halo (data-domain) arrays — identical
+  for centered and staggered fields. The size-sniffing FMS does in
+  `domain_offsets` reduces to one comparison.
+- Prototype passes contiguous compute-window buffers across bind(C) (one copy in
+  the wrapper). Ergonomic; revisit for production only if the copy shows up in Q6
+  measurements.
+
+## Q3 — MOM6 dispatch reality (MOM_io_infra.F90)
+
+- TBD (spine work).
+
+## Q4 — FMS diag semantics (windows, average_T1/T2, accumulation order)
+
+- TBD.
+
+## Q5 — Restart-spanning accumulator state
+
+- TBD.
+
+## Q6 — Performance at production scale (cesm_t232, 768 ranks)
+
+- TBD. Baselines to collect first: FMS history-write, restart-write, restart/IC-read
+  wallclock from a current cesm_t232 run (CPU_stats / logfile timers).
+
+## Build-glue changes made (working trees, uncommitted)
+
+- turbo-stack `build.sh`: `parallelio/2.6.8` appended to the three Derecho module
+  lines; `PIO_INSTALL_PATH`/`PIO_INCLUDE_FLAGS`/`PIO_LINK_FLAGS` (`-lpioc`) derived
+  from `NCAR_ROOT_PARALLELIO` (or preset `PIO_INSTALL_PATH` for containers) and
+  threaded into the libTIM mkmf and MOM6 link stages (TIM infra only).
+- TIM CMake `find_package` for PIO: deferred until spine code exists.
