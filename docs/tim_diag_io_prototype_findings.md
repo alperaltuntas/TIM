@@ -116,8 +116,22 @@ pass"). Every entry cites how it was established (spike test, run, measurement).
 
 ## Q6 — Performance at production scale (cesm_t232, 768 ranks)
 
-- TBD. Baselines to collect first: FMS history-write, restart-write, restart/IC-read
-  wallclock from a current cesm_t232 run (CPU_stats / logfile timers).
+- **Read performance, 128 ranks (single node, interactive), cesm_t232 tx2_3v2
+  (540×480×75, tripolar, AUTO_MASKTABLE, symmetric), intel build:** restart
+  continuation reading the 2.1 GB MOM.res.nc + grid/topo files — 51 seam-timed
+  read calls (identical instrumentation for both paths, bracketing the whole
+  read_field/read_vector bodies):
+  - FMS (fms2_io):  max over ranks 3.556 s (root 3.543 s)
+  - TIM (PIO, PNETCDF iotype, BOX rearranger, 32 iotasks = nprocs/4): max 1.746 s
+  - **TIM reads 2.0x faster**; the ~1.8 s saving is visible in total wallclock
+    (53.1 s → 51.1 s). Correctness: final restarts byte-identical, ocean.stats
+    identical.
+  - Also validates the read spine on a tripolar masked-layout production config.
+- 768-rank production numbers: batch job queued (same experiment, 6 nodes).
+- Method notes: run-segment length for cesm_t232 must be set via ocean_solo_nml
+  (months/days/hours) — DAYMAX alone does not bound the segment in this config.
+  The gnu build segfaults on cesm_t232 (unrelated to TIM I/O; case has only ever
+  run intel) — worth its own issue.
 
 ## Build-glue changes made (working trees, uncommitted)
 
