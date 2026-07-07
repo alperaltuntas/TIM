@@ -164,6 +164,10 @@ static int openAndFind(const std::string& path, const std::string& varname,
   ensureInit();
   int iotype = PIO_IOTYPE_PNETCDF;
   int rc = PIOc_openfile(iosysid, ncid, &iotype, path.c_str(), PIO_NOWRITE);
+  if (rc != PIO_NOERR) {  // netCDF-4/HDF5 files need the other iotype
+    iotype = PIO_IOTYPE_NETCDF4P;
+    rc = PIOc_openfile(iosysid, ncid, &iotype, path.c_str(), PIO_NOWRITE);
+  }
   if (rc != PIO_NOERR) return rc;
 
   rc = PIOc_inq_varid(*ncid, varname.c_str(), varid);
