@@ -2,24 +2,10 @@
 
 #include "tim_decomp_cache.hpp"
 
-#include <mpi.h>
-
 #include <cstdlib>
 
 namespace TIM {
 namespace IO {
-
-static IoSystem* g_instance = nullptr;
-
-IoSystem& IoSystem::instance() {
-  if (!g_instance) g_instance = new IoSystem();
-  return *g_instance;
-}
-
-void IoSystem::shutdown() {
-  delete g_instance;
-  g_instance = nullptr;
-}
 
 int IoSystem::chooseIoTasks(int nprocs) {
   int niotasks = nprocs >= 4 ? nprocs / 4 : 1;
@@ -29,16 +15,16 @@ int IoSystem::chooseIoTasks(int nprocs) {
   return niotasks;
 }
 
-IoSystem::IoSystem() {
+IoSystem::IoSystem(MPI_Comm comm) : comm_(comm) {
   int nprocs = 1;
-  MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
+  MPI_Comm_size(comm_, &nprocs);
   const int niotasks = chooseIoTasks(nprocs);
-  sys_ = Backend::init(0, niotasks, nprocs / niotasks);
-  decomps_ = new DecompCache(sys_);
+  sys_ = Backend::init(comm_, niotasks, nprocs / niotasks);
+  decomps_ = std::make_unique<DecompCache>(sys_);
 }
 
 IoSystem::~IoSystem() {
-  delete decomps_;
+  decomps_.reset();  // decomps must be freed while the iosystem is alive
   if (sys_ >= 0) Backend::finalize(sys_);
 }
 

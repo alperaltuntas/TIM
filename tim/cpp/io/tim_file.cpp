@@ -23,6 +23,7 @@ bool ciEqual(const std::string& a, const std::string& b) {
 File& File::operator=(File&& o) noexcept {
   if (this != &o) {
     close();
+    sys_ = o.sys_;
     id_ = o.id_; o.id_ = -1;
     writable_ = o.writable_;
     in_def_ = o.in_def_;
@@ -37,18 +38,20 @@ File& File::operator=(File&& o) noexcept {
   return *this;
 }
 
-std::optional<File> File::openForRead(const std::string& path) {
-  FileId id = Backend::openRead(IoSystem::instance().sys(), path);
+std::optional<File> File::openForRead(IoSystem& sys, const std::string& path) {
+  FileId id = Backend::openRead(sys.sys(), path);
   if (id < 0) return std::nullopt;
   File f;
+  f.sys_ = &sys;
   f.id_ = id;
   return f;
 }
 
-std::optional<File> File::create(const std::string& path, int domainKey,
-                                 const Decomp2D& domain, Mode mode) {
-  auto& sys = IoSystem::instance();
+std::optional<File> File::create(IoSystem& sys, const std::string& path,
+                                 int domainKey, const Decomp2D& domain,
+                                 Mode mode) {
   File f;
+  f.sys_ = &sys;
   f.writable_ = true;
   f.domain_key_ = domainKey;
   f.domain_ = domain;
@@ -169,7 +172,7 @@ int File::readDecomposed(const std::string& varname, int domainKey,
   const int wni = wdw.ni(), wnj = wdw.nj();
   const int shx = (want_sx ? 1 : 0) - fsx, shy = (want_sy ? 1 : 0) - fsy;
 
-  auto& cache = IoSystem::instance().decomps();
+  auto& cache = sys_->decomps();
   Window comps[4];
   const int ncomp = d.readComponents(fstag, comps);
   std::vector<double> piece;
@@ -335,7 +338,7 @@ int File::writeDecomposed(const std::string& varname, const double* buf,
             buf[(size_t)k * wni * wdw.nj() + (size_t)(j - wdw.js) * wni +
                 (i - wdw.is)];
 
-  DecompId ioid = IoSystem::instance().decomps().get(
+  DecompId ioid = sys_->decomps().get(
       domain_key_, domain_, vi.stagger, vi.nz, vi.nz2,
       DecompCache::Family::WritePartition);
   int rc = Backend::writeDArray(id_, v, ioid, (long long)part.size(),

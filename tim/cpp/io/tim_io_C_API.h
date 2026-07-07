@@ -5,6 +5,10 @@
 extern "C" {
 #endif
 
+/* Create the component's I/O context on this (Fortran) communicator; call
+   from MOM_infra_init. Ensemble-safe: each member passes its own pelist. */
+void tim_io_init(int fcomm);
+
 int tim_io_register_domain(int nig, int njg, int isc, int iec, int jsc,
                                 int jec, int symmetric);
 

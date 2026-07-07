@@ -6,6 +6,8 @@
 // means reimplementing this one file against the shared PIOc_* subset, with
 // any signature drift absorbed here and nowhere else. No pio.h in this header.
 
+#include <mpi.h>
+
 #include <string>
 #include <vector>
 
@@ -23,8 +25,8 @@ enum class OpenMode : int { Read = 0, Write = 1 };
 enum class CreateMode : int { Clobber = 0 };
 
 struct Backend {
-  // --- iosystem lifecycle ---
-  static SysId init(int fcomm_world_placeholder, int niotasks, int stride);
+  // --- iosystem lifecycle (explicit communicator; ensemble-safe) ---
+  static SysId init(MPI_Comm comm, int niotasks, int stride);
   static void finalize(SysId);
 
   // --- decompositions (dof: 1-based flat global offsets; empty ok) ---

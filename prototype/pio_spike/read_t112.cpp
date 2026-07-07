@@ -25,6 +25,8 @@ int main(int argc, char** argv) {
   Decomp2D d(NIG, NJG, px * (NIG / PX) + 1, (px + 1) * (NIG / PX),
              py * (NJG / PY) + 1, (py + 1) * (NJG / PY), true);
 
+  TIM::IO::IoSystem sys(MPI_COMM_WORLD);  // explicit; no singletons
+
   const char* base = argc > 1 ? argv[1] : ".";
   struct Item { const char* file; const char* var; Stagger stag; };
   const Item items[] = {{"MOM.res.nc", "Temp", Stagger::Center},
@@ -38,7 +40,7 @@ int main(int argc, char** argv) {
   double t0 = MPI_Wtime();
   for (const auto& it : items) {
     double ti = MPI_Wtime();
-    auto f = File::openForRead(std::string(base) + "/" + it.file);
+    auto f = File::openForRead(sys, std::string(base) + "/" + it.file);
     if (!f) { if (rank == 0) std::printf("OPEN FAILED %s\n", it.file); MPI_Abort(MPI_COMM_WORLD, 1); }
     File::ReadInfo info;
     int rc = f->readDecomposed(it.var, 0, d, it.stag, 1, NK, 1, buf.data(), &info);
@@ -52,7 +54,6 @@ int main(int argc, char** argv) {
   if (rank == 0)
     std::printf("TOTAL: 5 x 8.4 GB vars (42 GB) in %.2f s => %.2f GB/s\n",
                 MPI_Wtime() - t0, 42.0 / (MPI_Wtime() - t0));
-  TIM::IO::IoSystem::shutdown();
   MPI_Finalize();
   return 0;
 }

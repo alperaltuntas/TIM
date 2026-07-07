@@ -16,19 +16,25 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace TIM {
 namespace IO {
 
+class IoSystem;
+
+// A File borrows its IoSystem (which must outlive it); ensemble runs hand
+// each member's Files that member's IoSystem.
 class File {
  public:
   enum class Mode : int { Write = 0, Overwrite = 1, Append = 2 };
 
   // Factories. Absence and failure are the same non-event for reads:
   // "no File" (std::nullopt), never a half-open object.
-  static std::optional<File> openForRead(const std::string& path);
-  static std::optional<File> create(const std::string& path, int domainKey,
-                                    const Decomp2D& domain, Mode mode);
+  static std::optional<File> openForRead(IoSystem& sys, const std::string& path);
+  static std::optional<File> create(IoSystem& sys, const std::string& path,
+                                    int domainKey, const Decomp2D& domain,
+                                    Mode mode);
 
   File(File&& o) noexcept { *this = std::move(o); }
   File& operator=(File&& o) noexcept;
@@ -89,6 +95,7 @@ class File {
   bool varHasUnlim(VarId v) const;
   int frameForTime(std::optional<double> tstamp);
 
+  IoSystem* sys_ = nullptr;
   FileId id_ = -1;
   bool writable_ = false;
   bool in_def_ = false;

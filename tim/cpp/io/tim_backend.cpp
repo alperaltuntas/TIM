@@ -11,15 +11,13 @@
 namespace TIM {
 namespace IO {
 
-SysId Backend::init(int /*placeholder*/, int niotasks, int stride) {
-  // PROTOTYPE ASSUMPTION: compute pelist == MPI_COMM_WORLD (standalone MOM6);
-  // production takes the component communicator.
+SysId Backend::init(MPI_Comm comm, int niotasks, int stride) {
   int iosysid = -1;
-  int rc = PIOc_Init_Intracomm(MPI_COMM_WORLD, niotasks, stride, 0,
+  int rc = PIOc_Init_Intracomm(comm, niotasks, stride, 0,
                                PIO_REARR_BOX, &iosysid);
   if (rc != PIO_NOERR) {
     std::fprintf(stderr, "TIM backend: Init_Intracomm rc=%d\n", rc);
-    MPI_Abort(MPI_COMM_WORLD, 1);
+    MPI_Abort(comm, 1);
   }
   PIOc_set_iosystem_error_handling(iosysid, PIO_RETURN_ERROR, nullptr);
   return iosysid;
