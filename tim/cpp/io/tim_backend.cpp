@@ -89,6 +89,13 @@ int Backend::putAttText(FileId f, VarId v, const std::string& name,
 int Backend::putAttInt(FileId f, VarId v, const std::string& name, int value) {
   return PIOc_put_att_int(f, v, name.c_str(), PIO_INT, 1, &value);
 }
+int Backend::defVarFill(FileId f, VarId v, bool single_precision) {
+  static double dfill = 9.9692099683868690e+36;  // NC_FILL_DOUBLE
+  static float ffill = 9.9692099683868690e+36f;  // NC_FILL_FLOAT
+  return PIOc_def_var_fill(f, v, 0 /*fill mode on*/,
+                           single_precision ? (void*)&ffill : (void*)&dfill);
+}
+
 VarId Backend::globalAtts() { return PIO_GLOBAL; }
 
 int Backend::findVar(FileId f, const std::string& name, VarId* v) {
@@ -125,8 +132,11 @@ int Backend::readDArray(FileId f, VarId v, DecompId d, long long n, double* buf)
 int Backend::writeDArray(FileId f, VarId v, DecompId d, long long n,
                          const double* buf) {
   static double dummy = 0.0;
+  // Cells covered by no rank (masked/eliminated tiles) get the netCDF default
+  // double fill, matching what FMS-written files contain.
+  static double fill = 9.9692099683868690e+36;  // NC_FILL_DOUBLE
   return PIOc_write_darray(f, v, d, (PIO_Offset)n,
-                           const_cast<double*>(n ? buf : &dummy), nullptr);
+                           const_cast<double*>(n ? buf : &dummy), &fill);
 }
 int Backend::getVaraDouble(FileId f, VarId v, const long long start[],
                            const long long count[], int ndims, double* buf) {

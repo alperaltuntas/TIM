@@ -48,6 +48,9 @@ struct Backend {
   static int inqDimId(FileId, const std::string& name, int* dimid);
   static int defVar(FileId, const std::string& name, bool single_precision,
                     const std::vector<int>& dimids_slowest_first, VarId* varid);
+  // Prefill the variable with the netCDF default fill so cells no rank writes
+  // (masked/eliminated tiles) match FMS-written files. Define mode only.
+  static int defVarFill(FileId, VarId, bool single_precision);
   static int putAttText(FileId, VarId varid_or_global, const std::string& name,
                         const std::string& value);
   static int putAttInt(FileId, VarId varid_or_global, const std::string& name,

@@ -127,6 +127,25 @@ pass"). Every entry cites how it was established (spike test, run, measurement).
   changing file_type's layout requires wiping the MOM6-stage build dirs (mkmf does not
   track cross-stage .mod dependencies — stale objects segfault).
 
+## Q6 — Write performance (cesm_t232, 128 ranks, intel)
+
+- Seam-timed A/B, identical instrumentation bracketing write_field_2d/3d/4d AND
+  close_file (PIO buffers darray writes; the flush lands in close, so close time
+  counts as write time): 32 calls incl. the ~2.1 GB restart write —
+  - FMS (fms2_io): max over ranks 10.07 s
+  - TIM (PIO/PNETCDF, partition decomps): max 2.09 s — **4.8x faster**
+  - (Excluding close, TIM's write CALLS alone are 0.27 s — do not quote that
+    number; the flush is real work.)
+  - ocean.stats identical; restart data identical on all active cells.
+- **Accepted difference (hygiene)**: cells belonging to masked/eliminated tiles
+  (written by no rank) read as 0 in TIM-written files vs the netCDF default
+  fill (9.97e36) in FMS-written ones. Three fill mechanisms were ineffective
+  through PIO 2.6.8's PNETCDF darray path (write_darray fillvalue,
+  PIOc_def_var_fill, PIOc_set_fill) — unwritten sparse-file regions read as
+  zeros. Model-invisible (eliminated tiles are never read by active ranks;
+  cross-read gates pass). Production options: PIO fill investigation, or one
+  explicit fill pass over the coverage complement (context can compute it).
+
 ## Q6 addendum — 768-rank read result (cesm_t232)
 
 - At 768 ranks (batch, premium): FMS 3.151 s vs TIM 4.683 s max — **TIM 1.5x SLOWER**,

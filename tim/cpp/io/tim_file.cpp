@@ -270,6 +270,7 @@ int File::defineVar(const std::string& name, const std::vector<std::string>& dim
   VarId v;
   int rc = Backend::defVar(id_, name, single_precision, cdims, &v);
   if (rc != 0) return rc;
+  Backend::defVarFill(id_, v, single_precision);
   if (!longname.empty()) Backend::putAttText(id_, v, "long_name", longname);
   if (!units.empty()) Backend::putAttText(id_, v, "units", units);
   if (!standard_name.empty())
