@@ -1,0 +1,343 @@
+# TIM C++ Diagnostics & I/O — Development Plan
+
+> Living design/plan document for the diagnostics and I/O rewrite. Version-controlled
+> so that engineers, Claude sessions, and other agents share one source of truth.
+> Update it as decisions change; it is the plan of record, not a snapshot.
+
+## Context
+
+TIM (`submodules/infra/TIM`) is turbo-stack's replacement infra library for MOM6: a trimmed
+NCAR-FMS fork being incrementally rewritten in C++/AMReX to streamline GPU porting. FMS's
+design is intertwined and over-complex. In TIM, we aim for simpler APIs, deeper modules i.e., better
+complexity handling, better abstractions, and better decomposition of concepts such that
+the end result is a more maintainable and efficient system. The first rewrite target is
+**diagnostics and I/O**. Today those subsystems (`diag_manager/`, `fms2_io/`, `mpp/`) are
+still live trimmed-FMS Fortran; the only end-to-end C++ port is `TIM::checksum`.
+
+Decisions made:
+- **I/O backend: PIO2 (NCAR ParallelIO)** — host-side parallel netCDF with decomposition
+  rearrangement. (No library writes CF-netCDF from GPU memory; E3SM/ICON/NEMO all stage
+  device→host then hand off to a parallel writer. AMReX has zero netCDF support.)
+  **The backend must be swappable to SCORPIO (E3SM's PIO2 fork) quickly**: confine all
+  backend calls to one seam and stick to the C-API subset the two libraries share.
+- **Restart-spanning averaging**: FMS diag_manager loses partial accumulation at restart
+  (a mid-month restart corrupts/splits monthly means). The new diag manager must persist
+  and restore accumulator state across restarts — a required feature, not an afterthought.
+- **Clean new C++ API** — FMS behavior is the spec, not the interface. MOM6's two wrapper
+  files (`config_src/infra/TIM/MOM_diag_manager_infra.F90`, `MOM_io_infra.F90`) are the
+  swap seams; their internals get rewritten onto the new bind(C) surface.
+- **Classic diag_table parsing first**, internal config model YAML-extensible.
+- **Prerequisites staged**: domain metadata bridged from FMS `mpp_domains` (not ported);
+  time/calendar bridged first, native C++ `TIM::Time` when diag scheduling needs it.
+- **Two-pass development ("design it twice" / build one to throw away)**: a quick,
+  deliberately tactical prototype of the whole spine first — its sole purpose is to
+  refine the design and this plan — then a fresh production implementation with the
+  revised design. See "Prototype pass" below. The prototype lives on the
+  `parallelio-prototype` branch and is never PR'd toward main.
+- **Performance is a first-class requirement**, not a phase-4 afterthought: the prototype
+  must probe performance at production scale (cesm_t232, 768 ranks) so that performance
+  findings shape the production design rather than being tuned in after it.
+
+## Key facts (verified during exploration)
+
+- MOM6's ENTIRE FMS diag surface = 11 procedures + 4 constants in
+  `MOM_diag_manager_infra.F90` (register_diag_field/static_field, send_data with weight,
+  diag_send_complete, set_time_end, init/end, field_add_attribute, get_diag_field_id,
+  diag_axis_init, get_diag_axis_name; DIAG_FIELD_NOT_FOUND, null_axis_id, EAST, NORTH).
+  ~1,100 registered fields, ~1,200 post sites. **Weighted time-averaging/reduction happens
+  in FMS** — the new diag manager must implement it. MOM6 owns vertical remapping,
+  horizontal averaging, masking/staggering, diag buffers, restart bookkeeping — out of scope.
+- MOM6's file-I/O surface = ~20 fms2_io primitives in `MOM_io_infra.F90` (open/close/
+  flush, read_data ×34 uses, write_data, register_axis/field/attributes, variable
+  queries, get_global_io_domain_indices, FmsNetcdfFile_t vs FmsNetcdfDomainFile_t).
+- The two wrapper seams are independent **on the MOM6 side** (FMS diag_manager writes
+  through its internal diag_output path, not through MOM_io_infra, so swapping one wrapper
+  never touches the other) — but the cutover is ordered, not symmetric: the new DiagManager
+  writes through TIM::IO, so I/O must land first, and during transition the FMS and TIM
+  I/O stacks coexist in one executable.
+- Decomposition metadata: MOM6's `MOM_domain_type` wraps FMS `domain2D` directly; extract
+  via existing mpp accessors. Time: FMS `time_type` (days/seconds/ticks) via
+  `MOM_time_manager.F90` (96 lines).
+- TIM C++ conventions to follow: `tim/cpp` + `namespace TIM`, C-API triplet pattern of
+  `tim_coms_infra_C_API.{h,cpp}` + `tim/fortran/*_interface.F90`; `amrex::ParallelDescriptor`
+  is the MPI layer (AMReX already initialized on MOM's communicator,
+  `MOM_coms_infra.F90:517`); errors via amrex::Abort; C++17; mkmf sweeps all TIM .cpp into
+  libTIM.a (build.sh threads AMReX-style include/link flags).
+- Derecho: `parallelio/2.6.8` module exists for intel/gcc/nvhpc with PnetCDF + parallel
+  netCDF4 (`libpioc`, `pio.h`, CMake configs). **Gotcha: the compiler-only-hash builds
+  are mpi-serial — always resolve via `module load parallelio` under cray-mpich**, and
+  under whatever ncarenv turbo-stack's build.sh currently loads (module pins were
+  recently updated to latest defaults — re-verify the parallelio version at P0 time). Container/CI fallback: build PIO2 as a submodule via a
+  `build-utils/pio-utils/Makefile` cloned from `build-utils/amrex-utils/Makefile`.
+- Prior art: TIM remote branch `dev/ncar_add_pio` (~15k-line Fortran fms2_pio_io tree,
+  "PIO domain write working") — semantic reference for decomp construction and filename
+  conventions; not to be merged.
+- Validation cases: `examples/double_gyre` (4 ranks, minutes, has diag_table + job-gpu.sh,
+  now configured for 4-GPU runs) = per-PR gate; `examples/cesm_t232` (1/4° global, 768
+  ranks on masked 25×40 layout, IO_LAYOUT 1,1, monthly means, `%4yr-%2mo` file templating)
+  = milestone gate. `nccmp` module available. pFUnit/ctest infra exists in
+  `turbo-stack/tests/`.
+- **CMake build system MERGED** (PR #16, June 2026): TIM's `CMakeLists.txt` now
+  `find_package(AMReX REQUIRED)` and builds a `tim` STATIC library from `tim/cpp` sources
+  (explicit source list — new tim/cpp files must be ADDED to the target, unlike mkmf's
+  auto-sweep), links `AMReX::amrex` + `MPI::MPI_CXX`, installs headers, exports
+  `cmake/TIMConfig.cmake.in`; TIM has its own `build.sh` (install prefix, `--parallel`).
+  mkmf via turbo-stack build.sh remains the production path.
+- **C++ test infra EXISTS** (PR #18): `test_mom/` is a standalone CMake/ctest project
+  running the AMReX-ported continuity kernels against captured Fortran fixtures.
+  Reusable pieces: `test_mom/common/captured_io.{hpp,cpp}` (.meta/.bin fixture loader,
+  incl. integer reads per PR #20) and `test_mom/common/amrex_assertions.{hpp,cpp}`;
+  `mom/cpp/CMakeLists.txt` packages kernels as a standalone `mom_continuity` lib.
+  Fixtures live in `/glade/work/altuntas/mom6_iturbo_data`; configure with
+  `-DTEST_MOM_DATA_DIR`.
+
+## Architecture (new code, all in TIM)
+
+```
+tim/cpp/core/tim_time.{hpp,cpp}       TIM::TimeStamp{days,seconds,ticks}, Calendar enum,
+                                      advance/toDate/fromDate/intervalIn (native calendar math)
+tim/cpp/core/tim_domain.{hpp,cpp}     TIM::Decomp2D (global sizes, compute/data extents in
+                                      1-based global indices, symmetric flag, layout,
+                                      io_layout, MPI comm) + Stagger enum{Center,EastFace,
+                                      NorthFace,Corner} + globalNx/Ny, localExtent helpers
+tim/cpp/io/tim_backend.{hpp,cpp}      TIM::IO backend seam: the ONLY translation unit(s)
+                                      that include pio.h. Thin internal interface over the
+                                      ~25 PIOc_* calls TIM needs (init/finalize, initdecomp,
+                                      create/open/close, def_dim/def_var/put_att/get_att,
+                                      inq_*, setframe, write/read_darray, put/get_vara).
+                                      PIO2 and SCORPIO share this C API (SCORPIO is a PIO2
+                                      fork; same PIOc_* names) — swapping = pointing
+                                      PIO_INSTALL_PATH/module at SCORPIO + rebuilding, with
+                                      any signature drift absorbed HERE, nowhere else.
+                                      Rules that keep the swap cheap: no PIO types/ids in
+                                      any public TIM::IO header (opaque ints only), no use
+                                      of PIO2-only or SCORPIO-only extensions, iotype/
+                                      rearranger names mapped through TIM enums.
+tim/cpp/io/tim_iosystem.{hpp,cpp}     TIM::IO::IoSystem — iosysid lifecycle via the backend
+                                      seam, one per communicator, iotasks from io_layout
+                                      (env-overridable)
+tim/cpp/io/tim_file.{hpp,cpp}         TIM::IO::File — THE deep module: open()->optional
+                                      (merges exists+open), plain vs domain files unified,
+                                      defineAxis/defineVar/putGlobalAtt, implicit enddef,
+                                      record management inside write() (write_time_if_later
+                                      semantics), case-insensitive findVar/read,
+                                      writeAxes() writes global coords (kills
+                                      get_global_io_domain_indices + .nc.XXXX filesets),
+                                      readSlab, metadata queries, checksum atts,
+                                      setFilenameSuffix (filename_appendix)
+tim/cpp/io/tim_decomp_cache.cpp       internal: PIOc_InitDecomp cache keyed by
+                                      (domain,stagger,nz,type); dofs from global indices;
+                                      symmetric +1 row/col on edge ranks; masked layouts
+tim/cpp/diag/tim_diag_config.{hpp,cpp} DiagConfig{FileSpec,FieldSpec} + parseClassicDiagTable
+                                      (YAML front-end slots in later against same model)
+tim/cpp/diag/tim_diag_axis.{hpp,cpp}  AxisRegistry (value store; null_axis=0)
+tim/cpp/diag/tim_diag_reduce.{hpp,cpp} Accumulator — weighted mean/min/max/none (+rms/pow
+                                      later), buffers in amrex::The_Arena() (device-capable),
+                                      accumulate via ParallelFor, finalizeToHost() = the ONE
+                                      device→pinned-host staging point before PIO.
+                                      Serializable: exposes state()/restore() over
+                                      {partial buffer, wsum, count, window_start} so
+                                      in-progress reductions survive restarts
+tim/cpp/diag/tim_diag_manager.{hpp,cpp} DiagManager — registerField/post/endOfTimestep/
+                                      setEndTime/end; field↔table matching, per-file output
+                                      scheduling + new_file_freq rotation + %4yr-%2mo names
+                                      (via TIM::Time), average_T1/T2/time_bnds, static
+                                      fields, missing values; writes ONLY through TIM::IO.
+                                      Restart-spanning averaging (FMS can't do this):
+                                      saveState(path)/restoreState(path) persist every
+                                      mid-window Accumulator + its window metadata to a
+                                      diag restart file (e.g. RESTART/TIM.diag.res.nc,
+                                      written through TIM::IO with the same Decomp2D;
+                                      one variable per in-progress stream + wsum/count/
+                                      window attrs). Window boundaries computed from the
+                                      diag_table base date in absolute time — never from
+                                      run start — so a mid-month restart resumes the same
+                                      month's mean exactly. On restore: match streams by
+                                      (module,field,file) name; missing state = fresh
+                                      window (new diag_table entries just start clean)
+tim/cpp/tim_io_C_API.{h,cpp}          extern "C": tim_domain_register(tim_domain_c*),
+tim/cpp/tim_diag_C_API.{h,cpp}        tim_io_open/define/write/read/query/close (int
+                                      handles), tim_diag_init/axis_init/register_field/
+                                      post/send_complete/set_time_end/end; tim_time_c
+                                      {days,seconds,ticks}; strings null-terminated
+tim/fortran/tim_io_interface.F90      bind(C) modules (tim_coms_infra_interface.F90 pattern)
+tim/fortran/tim_diag_interface.F90
+```
+
+Design rules: DiagManager contains zero netCDF/PIO calls; TIM::IO contains zero AMReX/
+diag knowledge (pure host code). FMS-isms stay in the Fortran wrappers: EAST/NORTH→Stagger
+mapping, logical-mask+rmask merge into one rmask, is_in/ie_in defaulting→LocalExtent,
+null_axis_id→zero-axis registration, r4→r8 copies. `Post{data, extents, rmask, weight,
+memspace}` is the core diag primitive — takes a raw pointer so both today's Fortran host
+arrays and future device-resident MultiFab components work (wrapper flips memspace flag).
+
+## Prototype pass (first; timeboxed ~2-3 weeks)
+
+A quick end-to-end implementation of the whole spine (bridges → backend seam → File →
+diag manager → MOM6 dispatch), deliberately tactical. It is DONE when it has answered
+the exit questions below — not when it works well. Branch: `parallelio-prototype`; its
+code is reference material for the production pass, never a starting point (exception:
+boring proven parts — build glue, bind(C) marshalling, domain-extraction bridge — may be
+carried over as-is). The abstraction-increment principle governing the production pass
+(below) deliberately does NOT apply here.
+
+**Exit questions the prototype must answer:**
+1. PIO ergonomics: decomp construction for masked (cesm_t232 25×40/768) + symmetric
+   staggered layouts; append-to-FMS-written files; livable error-handling mode;
+   PIO2/SCORPIO shared-subset contract (absorbs the former standalone PIO spike).
+2. C API shape: handle granularity, string/attribute crossing, where FMS-isms leak.
+3. MOM6 dispatch: what the `file_type` dual-backend dispatch really looks like in
+   `MOM_io_infra.F90`; any wrapper procedures that resist clean mapping.
+4. FMS diag semantics: exact averaging-window boundaries, average_T1/T2/time_bnds
+   values, month rollover, accumulation order needed for bit-identical means.
+5. Restart-spanning state: workable restart-file format for mid-window accumulators;
+   state volume at cesm_t232 scale.
+6. **Performance at production scale**: history-write, restart-write, and
+   restart/IC-read wallclock vs FMS baselines on cesm_t232 (768 ranks); BOX vs SUBSET
+   rearranger and PNETCDF vs NETCDF4P at that scale; per-step overhead of register/post
+   traffic with the real ~1,000-field load; diag accumulation overhead. Record numbers
+   in the findings doc — these shape production design choices (decomp caching,
+   buffering, iotask counts), not just tuning.
+
+**Bar (asymmetric):** double_gyre is the correctness workhorse; cesm_t232 is exercised
+for the performance probes and the masked-layout questions, not full parity. Chase
+bit-identity ONLY on the restart-read path (cheap, highest signal); for diagnostics,
+quantify diffs rather than eliminating them. One compiler; hardcode freely; mean +
+snapshot reductions only; tests only where they answer an exit question.
+
+**Deliverable:** a revised version of THIS document (interfaces corrected from
+experience, risks retired/confirmed, estimates re-based) plus a findings/lessons doc
+(the PR-distilled-lessons pattern of `generate_amrex_code/lessons.md`) — not the code.
+Then the production pass below begins fresh.
+
+## Phased roadmap (production pass — after the prototype)
+
+**Increment principle: the units of development are complete abstractions, not
+features.** Each phase implements a module's whole designed interface as one unit;
+end-to-end feature demonstrations ("TIM reads a restart", "restart-spanning means") are
+validation gates *inside* phases, never separate increments. This forbids shipping half
+an interface shaped by its first feature (e.g. a read-only File) and bolting the rest on.
+(The prototype pass is exempt by design; this principle governs production development.)
+
+### P0 — Prerequisites
+1. **Build glue (turbo-stack PR):** `module load parallelio` in build.sh for all three
+   compilers; `PIO_INCLUDE_FLAGS`/`PIO_LINK_FLAGS` (`-lpioc` only) threaded like AMREX_*
+   into libTIM mkmf and MOM6 link; `build-utils/pio-utils/Makefile` submodule build for
+   containers. Gate: existing FMS2 + TIM builds unchanged, link succeeds.
+2. **C++ unit tests:** the CMake base is already merged (PR #16) and `test_mom/` proves
+   the pattern (PR #18). Remaining work: add `find_package` for ParallelIO to TIM's
+   CMakeLists (module on Derecho ships CMake config packages), register the new
+   `tim/cpp/{core,io,diag}` sources in the `tim` target as they land, and stand up
+   `test_tim/` (or extend test_mom) as the ctest home for the new unit tests, reusing
+   `test_mom/common/captured_io` + `amrex_assertions`. mkmf remains production; CMake
+   is dev/test.
+3. **PIO2 de-risking: absorbed by the prototype pass** (exit questions 1 and 6). The
+   required outputs stand: the TIM::IO surface frozen against real PIO behavior, and the
+   PIO2/SCORPIO shared-subset contract recorded (diff the PIOc_* signatures used against
+   SCORPIO's headers, github.com/E3SM-Project/scorpio) — both land in the prototype
+   findings doc before production Phase 1 starts.
+4. **Bridges:** `tim_domain_register` bind(C) call from `MOM_domain_infra.F90` (extract
+   via mpp_get_compute/global_domain, layout, symmetric offsets → Decomp2D registry);
+   time crossing as tim_time_c + calendar enum (FMS stays the calendar oracle until 2a).
+
+### Phase 1 — TIM::IO File abstraction + MOM6 I/O cutover
+The COMPLETE File interface (open/inquiry/read/metadata-definition/write) implemented as
+one unit against the frozen spike contract — not a read-only slice extended later.
+- TIM: tim/cpp/core + tim/cpp/io (whole module) + C API + unit tests.
+- MOM6: bind(C) interface module; dispatch inside `MOM_io_infra.F90` — add a TIM handle
+  member to `file_type` beside the FmsNetcdfDomainFile_t pointer; runtime namelist flag
+  (default off) so one binary A/Bs both paths; per-file dispatch on the write side
+  (MOM6 restart bookkeeping is native and flows entirely through this seam).
+- **Read gate (FIRST MILESTONE: "TIM reads a MOM6 restart")**: double_gyre + cesm_t232
+  restart-read through TIM → `ocean.stats`/log checksums **bit-identical** to FMS-read
+  control (reading same bytes ⇒ identical evolution; the strongest cheap oracle; touches
+  no output files; rollback = namelist flag). Validate this gate first — it exercises the
+  whole spine while write code is still being finished.
+- **Write gate**: cross-matrix (FMS-write→TIM-read, TIM-write→FMS-read); exact-restart
+  test (N days vs N/2+restart+N/2); `nccmp -d -m -g -f` TIM vs FMS restart — data
+  bit-identical (raw doubles), metadata diffs whitelisted.
+
+### Phase 2 — Diag abstractions (config, reduction engine, manager)
+- 2a: DiagConfig + diag_table parser (fixtures: verbatim double_gyre + cesm_t232
+  diag_tables) + native TIM::Time calendar math (unit-tested against FMS time_manager
+  as oracle).
+- 2b: Accumulator — the complete abstraction including state()/restore() persistence as
+  first-class state FROM THE START (not a later extension): replicate FMS
+  accumulate-then-normalize order for bit-reproducible means; missing values, masks,
+  average_T1/T2/time_bnds; serialization over {partial buffer, wsum, count, window_start}.
+- 2c: DiagManager — complete interface including saveState/restoreState (diag restart
+  file + window scheduling anchored to absolute calendar time) + rewrite of
+  `MOM_diag_manager_infra.F90` internals + the MOM6 restart hook (`tim_diag_save_state`
+  next to the driver's save_restart trigger; restore during `MOM_diag_manager_init` when
+  a diag restart file exists; absence = cold start, so existing run scripts work
+  unchanged). Cutover: whole-run backend flag (never per-field — exactly one backend
+  owns history files per run).
+- **Parity gate**: available_diags parity; double_gyre history nccmp (bit-identical
+  target for snapshots and for means if op order matches; documented ≤1e-15 fallback
+  per-field); then cesm_t232 monthly history parity incl. file rotation/naming.
+- **Restart-spanning gate** (capability FMS lacks — no FMS behavior to match): double_gyre
+  N-day run with multi-day means vs same run restarted mid-window → history files
+  bit-identical (accumulation order preserved by construction, so strict identity is the
+  right bar); repeat with a mid-month cesm_t232 restart.
+- Capture/replay aid (extends lessons.md §8): capture (slab, weight, mask, time)
+  sequences at the send_data_infra seam from a real run; replay into Accumulator; compare
+  to FMS-written netCDF — isolates reduction bugs from I/O bugs. Build on the existing
+  fixture format and loader (`test_mom/common/captured_io.{hpp,cpp}`) rather than
+  inventing a new one; fixtures alongside the kernel captures in
+  `/glade/work/altuntas/mom6_iturbo_data`.
+
+### Phase 3 — Scale, GPU, performance
+- Verification at scale rather than discovery: the prototype already measured cesm_t232
+  768-rank performance and fixed rearranger/iotype choices; this phase confirms the
+  production implementation meets or beats those prototype baselines (and FMS baselines
+  via tim_profile/CPU_stats), plus `--offload` nvhpc builds each phase (PIO stays
+  host-only; accumulation buffers flip to device via The_Arena).
+
+### Phase 4 — Deferred (explicit)
+- Native domain2D replacement (Decomp2D producer switches to AMReX DistributionMapping),
+  YAML config front-end, retiring FMS fms2_io/diag_manager sources.
+- **Trimmed FMS Fortran keeps compiling throughout**: MOM_interp_infra, data_override,
+  coupler_types still use FMS — coexistence is permanent for now (shared libnetcdf, no
+  symbol clash; dispatch owns file handles so no filename can be double-written).
+
+PR discipline (strangler-fig): each phase = TIM PR (dead-by-default code + unit tests) →
+turbo-stack PR (build glue) → MOM6 PR (dispatch, default off). Flip defaults only after
+gates pass on both examples. `--infra FMS2` never touched.
+
+## Risks
+1. FMS averaging-window edge semantics ((t0,t1] boundaries, average_T1/T2, month rollover)
+   — biggest behavioral risk; mitigated by capture/replay oracle + A/B runs.
+2. Wrong PIO build (mpi-serial hash) / netCDF-HDF5 stack mismatch — module-resolve under
+   the same ncarenv stack; assert parallel capability at init.
+3. Masked PE layouts + symmetric staggered +1 sizes in decomp dofs — dedicated unit tests;
+   cross-check global dims vs FMS-written files.
+4. PIO append to FMS-written files & collective put_var discipline for scalars — spike
+   covers; all File methods collective by contract.
+5. Bit-identity for averaged fields may need tolerance — snapshots/restarts stay strict.
+6. PIO2/SCORPIO API drift (SCORPIO has diverged in places: async I/O tasks, ADIOS iotype,
+   some added args) — mitigated by the backend seam + the spike's shared-subset contract;
+   CI could later add a SCORPIO build of the spike to keep the seam honest.
+7. Diag-restart state volume (~one 2D/3D partial-sum buffer per actively-averaged stream;
+   at cesm_t232 scale potentially hundreds of 3D fields) — written once per restart through
+   the same parallel path as restarts themselves; acceptable, but monitor size/time and
+   consider skipping streams whose window happens to close exactly at restart time.
+
+## Verification
+- Unit (ctest): parser fixtures, reduction property tests, decomp mapping (masked +
+  symmetric cases), calendar math vs FMS oracle.
+- Integration (MPI ctest 4–16 ranks): decomposed write/read round trip, FMS↔TIM cross-read.
+- End-to-end: double_gyre every PR (minutes); cesm_t232 at milestone gates; `ocean.stats` +
+  log checksums for solution invariance; `nccmp -d -m -g -f` for files; GPU double_gyre
+  (`job-gpu.sh`) each phase.
+- Restart-spanning averaging: continuous vs mid-window-restarted run → bit-identical
+  time-mean history (double_gyre routinely, cesm_t232 mid-month restart at the Phase-2 gate).
+
+## Critical files
+- `submodules/MOM6/config_src/infra/TIM/MOM_io_infra.F90` — I/O seam (spec + rewrite target)
+- `submodules/MOM6/config_src/infra/TIM/MOM_diag_manager_infra.F90` — diag seam
+- `submodules/MOM6/config_src/infra/TIM/MOM_domain_infra.F90` — domain-bridge call site
+- `submodules/infra/TIM/tim/cpp/` — all new C++ (core/, io/, diag/, C APIs)
+- `submodules/infra/TIM/tim/cpp/tim_coms_infra*` — conventions precedent
+- `/glade/work/altuntas/turbo-stack/build.sh` + `build-utils/amrex-utils/Makefile` — build glue
+- `submodules/infra/TIM/CMakeLists.txt` + `test_mom/` — merged CMake/ctest base to extend
+- TIM branch `dev/ncar_add_pio` — reference only (earlier Fortran PIO-under-fms2_io effort)
