@@ -13,7 +13,8 @@ int tim_io_register_domain(int nig, int njg, int isc, int iec, int jsc,
    returns 0 on success, PIO error code otherwise. */
 int tim_io_read_decomposed(const char* path, const char* varname,
                                 int domain_handle, int stagger, int timelevel,
-                                int nz, int nz2, double* buf);
+                                int nz, int nz2, double* buf, int* file_sx,
+                                int* file_sy);
 
 int tim_io_read_plain(const char* path, const char* varname,
                            int timelevel, int n, double* buf);

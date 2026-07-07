@@ -26,9 +26,13 @@ int registerDomain(const DomainInfo& d);   // -> handle (>=0)
 // (x fastest, then y, then k; caller sized it from the staggered local extent).
 // timelevel: 1-based record, or 0 for "no record/last-if-none".
 // Returns 0 on success, nonzero PIO error code otherwise (message on stderr).
+// file_sx/file_sy (optional out): whether the FILE's staggered axes carry the
+// symmetric +1 point in x/y; when 0 but the domain is staggered-symmetric, the
+// window's low-edge column/row is left unfilled (caller must not copy it).
 int readDecomposed(const std::string& path, const std::string& varname,
                    int domain_handle, int stagger, int timelevel, int nz,
-                   int nz2, double* buf);
+                   int nz2, double* buf, int* file_sx = nullptr,
+                   int* file_sy = nullptr);
 
 // Replicated read of a whole (small) 0d/1d var on all ranks.
 int readPlain(const std::string& path, const std::string& varname,
@@ -39,6 +43,8 @@ bool findVar(const std::string& path, const std::string& varname,
              std::string& actual_name);
 
 void finalize();   // PIOc_finalize (idempotent)
+
+int iosysId();     // the PIO iosystem id (for tests)
 
 }  // namespace IO
 }  // namespace TIM

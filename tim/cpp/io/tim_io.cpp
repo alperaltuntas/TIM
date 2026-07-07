@@ -53,6 +53,8 @@ static void ensureInit() {
   PIOc_set_iosystem_error_handling(iosysid, PIO_RETURN_ERROR, nullptr);
 }
 
+int iosysId() { ensureInit(); return iosysid; }
+
 int registerDomain(const DomainInfo& d) {
   ensureInit();
   domains.push_back(d);
@@ -195,32 +197,63 @@ static int openAndFind(const std::string& path, const std::string& varname,
 
 int readDecomposed(const std::string& path, const std::string& varname,
                    int domain_handle, int stagger, int timelevel, int nz,
-                   int nz2, double* buf) {
+                   int nz2, double* buf, int* file_sx, int* file_sy) {
   int ncid, varid;
   bool has_t = false;
   int rc = openAndFind(path, varname, &ncid, &varid, &has_t);
   if (rc != PIO_NOERR) return rc;
-  if (debugOn() && amRoot())
-    std::fprintf(stderr, "TIM_IO read_dd  %s:%s stag=%d nz=%d nz2=%d tl=%d\n",
-                 path.c_str(), varname.c_str(), stagger, nz, nz2, timelevel);
 
   const DomainInfo& d = domains[(size_t)domain_handle];
+
+  // The FILE determines the staggered axis sizes, not the model domain:
+  // symmetric-memory cases may write staggered axes of size nig (dropping the
+  // low edge) or nig+1 depending on config (FMS size-sniffs; so do we).
+  // Inspect the variable's x (last) and y (second-last) dim lengths.
+  int ndims = 0, dimids[8] = {0};
+  PIOc_inq_varndims(ncid, varid, &ndims);
+  PIOc_inq_vardimid(ncid, varid, dimids);
+  PIO_Offset xlen = 0, ylen = 0;
+  if (ndims >= 1) PIOc_inq_dimlen(ncid, dimids[ndims - 1], &xlen);
+  if (ndims >= 2) PIOc_inq_dimlen(ncid, dimids[ndims - 2], &ylen);
+  const bool want_sx = (stagger == EAST_FACE || stagger == CORNER) && d.symmetric;
+  const bool want_sy = (stagger == NORTH_FACE || stagger == CORNER) && d.symmetric;
+  const int sxf = (want_sx && xlen == (PIO_Offset)d.nig + 1) ? 1 : 0;
+  const int syf = (want_sy && ylen == (PIO_Offset)d.njg + 1) ? 1 : 0;
+  if (file_sx) *file_sx = sxf;
+  if (file_sy) *file_sy = syf;
+  // Effective stagger for decomp construction = what the file actually has.
+  int fstag = CENTER;
+  if (sxf && syf) fstag = CORNER;
+  else if (sxf) fstag = EAST_FACE;
+  else if (syf) fstag = NORTH_FACE;
+
+  if (debugOn() && amRoot())
+    std::fprintf(stderr,
+                 "TIM_IO read_dd  %s:%s stag=%d(file %d) nz=%d nz2=%d tl=%d\n",
+                 path.c_str(), varname.c_str(), stagger, fstag, nz, nz2,
+                 timelevel);
+
+  // Window buffer layout is fixed by the CALLER's (domain) staggering; data
+  // from a less-staggered file lands shifted by (want - file) per dim, and the
+  // low-edge column/row that the file lacks is left untouched (the model fills
+  // it by halo/edge updates afterward, matching FMS behavior).
   int gnx, gny, ws, we, wjs, wje;
   staggeredExtents(d, stagger, gnx, gny, ws, we, wjs, wje);
   const int wni = we - ws + 1, wnj = wje - wjs + 1;
+  const int shx = (want_sx ? 1 : 0) - sxf, shy = (want_sy ? 1 : 0) - syf;
 
   if (has_t) PIOc_setframe(ncid, varid, timelevel > 0 ? timelevel - 1 : 0);
   static double dummyd = 0.0;
 
-  // Read each disjoint component and scatter it into the full window buffer
+  // Read each disjoint component and scatter it into the window buffer
   // (x fastest, then y, then k), so the caller sees one contiguous window.
   std::vector<double> piece;
   for (int comp = 0; comp < 4; ++comp) {
     int is, ie, js, je;
-    if (!componentWindow(d, stagger, comp, is, ie, js, je)) continue;
+    if (!componentWindow(d, fstag, comp, is, ie, js, je)) continue;
     const int ni = ie - is + 1, nj = je - js + 1;
     const PIO_Offset maplen = (PIO_Offset)ni * nj * nz;
-    int ioid = getDecomp(domain_handle, stagger, nz, nz2, comp);
+    int ioid = getDecomp(domain_handle, fstag, nz, nz2, comp);
     piece.assign((size_t)maplen, 0.0);
     rc = PIOc_read_darray(ncid, varid, ioid, maplen,
                           maplen ? piece.data() : &dummyd);
@@ -233,7 +266,8 @@ int readDecomposed(const std::string& path, const std::string& varname,
     for (int k = 0; k < nz; ++k)
       for (int j = js; j <= je; ++j)
         for (int i = is; i <= ie; ++i)
-          buf[(size_t)k * wni * wnj + (size_t)(j - wjs) * wni + (i - ws)] =
+          buf[(size_t)k * wni * wnj + (size_t)(j - wjs + shy) * wni +
+              (i - ws + shx)] =
               piece[(size_t)k * ni * nj + (size_t)(j - js) * ni + (i - is)];
   }
   PIOc_closefile(ncid);
@@ -297,9 +331,10 @@ int tim_io_register_domain(int nig, int njg, int isc, int iec, int jsc,
 
 int tim_io_read_decomposed(const char* path, const char* varname,
                                 int domain_handle, int stagger, int timelevel,
-                                int nz, int nz2, double* buf) {
+                                int nz, int nz2, double* buf, int* file_sx,
+                                int* file_sy) {
   return TIM::IO::readDecomposed(path, varname, domain_handle, stagger,
-                                 timelevel, nz, nz2, buf);
+                                 timelevel, nz, nz2, buf, file_sx, file_sy);
 }
 
 int tim_io_read_plain(const char* path, const char* varname,
