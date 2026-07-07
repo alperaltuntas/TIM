@@ -205,6 +205,29 @@ re-passed bit-identical. Lessons:
   reran unchanged) — evidence for the plan's "narrow bind(C) surface as the
   seam" bet.
 
+## Q3c — Query paths, region reads, and the collectivity contract
+
+- All remaining MOM_io_infra paths now dispatch through TIM: the read-handle
+  queries (open READONLY / get_file_info / get_file_times / get_file_fields /
+  field_exists / get_field_size / file_exists) and read_field_{2d,3d}_region.
+- **Collectivity finding (deadlocked us; production-critical):** FMS serves all
+  NON-domain file operations with rank-independent serial netCDF, and MOM
+  exploits that by calling several of them on the ROOT PE ONLY (horizontal
+  regridding reads global z-slabs on root, then broadcasts itself). A
+  collective implementation (PIO get_vara / collective open) deadlocks there —
+  one rank waits in a collective the others never enter. The backend seam now
+  has an explicit split: Backend (collective PIO; decomposed reads/writes) vs
+  Backend::Serial (per-rank plain netCDF; queries, plain reads, slabs). The
+  production File abstraction must carry this contract in its interface docs:
+  decomposed I/O is collective, everything path-based is rank-local.
+- Domain registrations are not few/static: cold-start regridding creates
+  temporary decompositions (blew a MAX=4 memo table); registries must grow.
+- **COLD-START GATE PASSED** (cesm_t232 from WOA z-init, 128 ranks, intel):
+  5 region reads through TIM; cold-start restart byte-identical to the FMS
+  control — full initialization state identical.
+- FMS oddity worth reporting upstream: read_field_3d_region's error header
+  says "read_field_2d_region".
+
 ## Q4 — FMS diag semantics (windows, average_T1/T2, accumulation order)
 
 - TBD.

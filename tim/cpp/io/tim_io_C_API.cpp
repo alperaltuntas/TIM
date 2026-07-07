@@ -8,6 +8,7 @@
 
 #include "../core/tim_config.hpp"
 #include "../core/tim_domain.hpp"
+#include "tim_backend.hpp"
 #include "tim_io_context.hpp"
 
 #include <mpi.h>
@@ -97,71 +98,63 @@ int tim_io_read_decomposed(const char* path, const char* varname,
   return rc;
 }
 
+/* Path-based queries, plain reads and slab reads are RANK-INDEPENDENT
+   (Backend::Serial): FMS serves all non-domain file access with per-rank
+   serial netCDF, and MOM calls several of these on the root PE only (e.g.
+   horizontal-regridding slabs) — a collective here deadlocks. Only the
+   decomposed reads/writes (inherently collective) go through PIO. */
+
+using TIM::IO::Backend;
+
 int tim_io_read_plain(const char* path, const char* varname, int timelevel,
                       int n, double* buf) {
-  File* f = ctx().readFile(path);
-  if (!f) return -1;
   if (debugOn())
     std::fprintf(stderr, "TIM_IO read_pl  %s:%s n=%d\n", path, varname, n);
-  return f->readPlain(varname, timelevel, n, buf);
+  return Backend::Serial::readPlain(path, varname, timelevel, n, buf);
 }
 
 int tim_io_var_exists(const char* path, const char* varname) {
-  File* f = ctx().readFile(path);
-  return (f && f->hasVar(varname)) ? 1 : 0;
+  return Backend::Serial::findVarCI(path, varname) == 0 ? 1 : 0;
 }
 
 int tim_io_file_exists(const char* path) {
-  return ctx().readFile(path) ? 1 : 0;
+  return Backend::Serial::fileExists(path) ? 1 : 0;
 }
 
 int tim_io_file_info(const char* path, int* ndims, int* nvars, int* ntimes) {
-  File* f = ctx().readFile(path);
-  if (!f) return -1;
-  if (ndims) *ndims = f->numDimsInFile();
-  if (nvars) *nvars = f->numVarsInFile();
-  if (ntimes) *ntimes = f->numTimesInFile();
-  return 0;
+  return Backend::Serial::fileInfo(path, ndims, nvars, ntimes);
 }
 
 int tim_io_file_times(const char* path, double* buf, int n) {
-  File* f = ctx().readFile(path);
-  return f ? f->timeValues(buf, n) : -1;
+  return Backend::Serial::timeValues(path, buf, n);
 }
 
 int tim_io_file_var_name(const char* path, int index1, char* out, int maxlen) {
-  File* f = ctx().readFile(path);
-  if (!f) return -1;
   std::string name;
-  if (f->varNameAt(index1 - 1, &name) != 0) return -1;
+  if (Backend::Serial::varNameAt(path, index1 - 1, &name) != 0) return -1;
   std::snprintf(out, (size_t)maxlen, "%s", name.c_str());
   return 0;
 }
 
 int tim_io_var_att(const char* path, const char* varname, const char* att,
                    char* out, int maxlen) {
-  File* f = ctx().readFile(path);
-  if (!f) return -1;
   std::string val;
-  if (!f->varAttText(varname, att, &val)) return -1;
+  if (Backend::Serial::attText(path, varname, att, &val) != 0) return -1;
   std::snprintf(out, (size_t)maxlen, "%s", val.c_str());
   return 0;
 }
 
 int tim_io_var_sizes(const char* path, const char* varname, int sizes[4]) {
-  File* f = ctx().readFile(path);
-  return f ? f->varSizes(varname, sizes) : -1;
+  return Backend::Serial::varSizes(path, varname, sizes);
 }
 
 int tim_io_read_slab(const char* path, const char* varname, const int start[4],
                      const int nread[4], double* buf) {
-  File* f = ctx().readFile(path);
-  if (!f) return -1;
   if (debugOn())
     std::fprintf(stderr, "TIM_IO read_sl  %s:%s [%d,%d,%d,%d]+[%d,%d,%d,%d]\n",
                  path, varname, start[0], start[1], start[2], start[3],
                  nread[0], nread[1], nread[2], nread[3]);
-  return f->readSlab(varname, start, nread, buf);
+  return Backend::Serial::readSlab(path, varname, start, nread, buf);
 }
 
 /* ---- write path ---- */

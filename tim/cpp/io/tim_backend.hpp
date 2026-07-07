@@ -76,6 +76,30 @@ struct Backend {
   // Contiguous hyperslab get/put (collective; result valid on all ranks).
   static int getVaraDouble(FileId, VarId, const long long start[],
                            const long long count[], int ndims, double* buf);
+
+  // --- rank-INDEPENDENT serial access (plain netCDF) ---
+  // FMS serves all non-domain file operations with per-rank serial reads;
+  // MOM calls some of them on the root PE only (e.g. horizontal regridding
+  // slabs), so these must never be collective. Case-insensitive var match.
+  struct Serial {
+    static bool fileExists(const std::string& path);
+    static int findVarCI(const std::string& path, const std::string& var,
+                         std::string* actual = nullptr);  // 0 if found
+    static int fileInfo(const std::string& path, int* ndims, int* nvars,
+                        int* ntimes);
+    static int timeValues(const std::string& path, double* buf, int n);
+    static int varNameAt(const std::string& path, int index0, std::string*);
+    static int attText(const std::string& path, const std::string& var,
+                       const std::string& att, std::string* out);
+    static int varSizes(const std::string& path, const std::string& var,
+                        int sizes[4]);  // Fortran order; returns ndims or <0
+    // start/count 1-based Fortran dim order (x,y,z,t)
+    static int readSlab(const std::string& path, const std::string& var,
+                        const int start[4], const int count[4], double* buf);
+    // whole small var (0d/1d), record-selected when the var has one
+    static int readPlain(const std::string& path, const std::string& var,
+                         int timelevel, int n, double* buf);
+  };
   static int putVaraDouble(FileId, VarId, const long long start[],
                            const long long count[], int ndims, const double* buf);
 };

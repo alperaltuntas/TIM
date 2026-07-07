@@ -4,8 +4,10 @@
 #include "tim_backend.hpp"
 
 #include <mpi.h>
+#include <netcdf.h>
 #include <pio.h>
 
+#include <cctype>
 #include <cstdio>
 
 namespace TIM {
@@ -161,6 +163,188 @@ int Backend::putVaraDouble(FileId f, VarId v, const long long start[],
   PIO_Offset s[8], c[8];
   for (int i = 0; i < ndims; ++i) { s[i] = start[i]; c[i] = count[i]; }
   return PIOc_put_vara_double(f, v, s, c, buf);
+}
+
+// ---- Backend::Serial: rank-independent plain-netCDF access ----
+
+namespace {
+bool ciEq(const char* a, const char* b) {
+  for (; *a && *b; ++a, ++b)
+    if (std::tolower((unsigned char)*a) != std::tolower((unsigned char)*b))
+      return false;
+  return *a == *b;
+}
+int sFindVarCI(int nc, const std::string& var, int* v, std::string* actual) {
+  if (nc_inq_varid(nc, var.c_str(), v) == NC_NOERR) {
+    if (actual) *actual = var;
+    return 0;
+  }
+  int nvars = 0;
+  nc_inq_nvars(nc, &nvars);
+  char nm[NC_MAX_NAME + 1];
+  for (int cand = 0; cand < nvars; ++cand) {
+    nc_inq_varname(nc, cand, nm);
+    if (ciEq(nm, var.c_str())) {
+      *v = cand;
+      if (actual) *actual = nm;
+      return 0;
+    }
+  }
+  return -1;
+}
+}  // namespace
+
+bool Backend::Serial::fileExists(const std::string& path) {
+  int nc;
+  if (nc_open(path.c_str(), NC_NOWRITE, &nc) != NC_NOERR) return false;
+  nc_close(nc);
+  return true;
+}
+
+int Backend::Serial::findVarCI(const std::string& path, const std::string& var,
+                               std::string* actual) {
+  int nc, v;
+  if (nc_open(path.c_str(), NC_NOWRITE, &nc) != NC_NOERR) return -1;
+  int rc = sFindVarCI(nc, var, &v, actual);
+  nc_close(nc);
+  return rc;
+}
+
+int Backend::Serial::fileInfo(const std::string& path, int* ndims, int* nvars,
+                              int* ntimes) {
+  int nc;
+  if (nc_open(path.c_str(), NC_NOWRITE, &nc) != NC_NOERR) return -1;
+  int nd = 0, nv = 0, unlim = -1;
+  size_t ul = 0;
+  nc_inq(nc, &nd, &nv, nullptr, &unlim);
+  if (unlim >= 0) nc_inq_dimlen(nc, unlim, &ul);
+  nc_close(nc);
+  if (ndims) *ndims = nd;
+  if (nvars) *nvars = nv;
+  if (ntimes) *ntimes = (int)ul;
+  return 0;
+}
+
+int Backend::Serial::timeValues(const std::string& path, double* buf, int n) {
+  int nc, unlim = -1;
+  if (nc_open(path.c_str(), NC_NOWRITE, &nc) != NC_NOERR) return -1;
+  nc_inq_unlimdim(nc, &unlim);
+  int rc = -1;
+  if (unlim >= 0) {
+    int nvars = 0;
+    nc_inq_nvars(nc, &nvars);
+    for (int v = 0; v < nvars; ++v) {
+      int nd = 0, dimids[NC_MAX_VAR_DIMS];
+      nc_inq_varndims(nc, v, &nd);
+      nc_inq_vardimid(nc, v, dimids);
+      if (nd == 1 && dimids[0] == unlim) {
+        size_t s = 0, c = (size_t)n;
+        rc = (nc_get_vara_double(nc, v, &s, &c, buf) == NC_NOERR) ? 0 : -1;
+        break;
+      }
+    }
+  }
+  nc_close(nc);
+  return rc;
+}
+
+int Backend::Serial::varNameAt(const std::string& path, int index0,
+                               std::string* name) {
+  int nc;
+  if (nc_open(path.c_str(), NC_NOWRITE, &nc) != NC_NOERR) return -1;
+  char nm[NC_MAX_NAME + 1] = {0};
+  int rc = (nc_inq_varname(nc, index0, nm) == NC_NOERR) ? 0 : -1;
+  nc_close(nc);
+  if (rc == 0) *name = nm;
+  return rc;
+}
+
+int Backend::Serial::attText(const std::string& path, const std::string& var,
+                             const std::string& att, std::string* out) {
+  int nc, v;
+  if (nc_open(path.c_str(), NC_NOWRITE, &nc) != NC_NOERR) return -1;
+  int rc = sFindVarCI(nc, var, &v, nullptr);
+  if (rc == 0) {
+    size_t len = 0;
+    rc = (nc_inq_attlen(nc, v, att.c_str(), &len) == NC_NOERR) ? 0 : -1;
+    if (rc == 0) {
+      std::vector<char> b(len + 1, '\0');
+      rc = (nc_get_att_text(nc, v, att.c_str(), b.data()) == NC_NOERR) ? 0 : -1;
+      if (rc == 0) *out = std::string(b.data(), len);
+    }
+  }
+  nc_close(nc);
+  return rc;
+}
+
+int Backend::Serial::varSizes(const std::string& path, const std::string& var,
+                              int sizes[4]) {
+  int nc, v;
+  if (nc_open(path.c_str(), NC_NOWRITE, &nc) != NC_NOERR) return -1;
+  int rc = sFindVarCI(nc, var, &v, nullptr);
+  int nd = 0;
+  if (rc == 0) {
+    int dimids[NC_MAX_VAR_DIMS];
+    nc_inq_varndims(nc, v, &nd);
+    nc_inq_vardimid(nc, v, dimids);
+    if (nd > 4) nd = 4;
+    for (int k = 0; k < nd; ++k) {
+      size_t len = 0;
+      nc_inq_dimlen(nc, dimids[nd - 1 - k], &len);
+      sizes[k] = (int)len;
+    }
+  }
+  nc_close(nc);
+  return rc == 0 ? nd : -1;
+}
+
+int Backend::Serial::readSlab(const std::string& path, const std::string& var,
+                              const int start[4], const int count[4],
+                              double* buf) {
+  int nc, v;
+  if (nc_open(path.c_str(), NC_NOWRITE, &nc) != NC_NOERR) return -1;
+  int rc = sFindVarCI(nc, var, &v, nullptr);
+  if (rc == 0) {
+    int nd = 0;
+    nc_inq_varndims(nc, v, &nd);
+    if (nd < 1 || nd > 4) rc = -2;
+    if (rc == 0) {
+      size_t s[4] = {0, 0, 0, 0}, c[4] = {1, 1, 1, 1};
+      for (int k = 0; k < nd; ++k) {
+        s[nd - 1 - k] = (size_t)(start[k] - 1);
+        c[nd - 1 - k] = (size_t)count[k];
+      }
+      rc = (nc_get_vara_double(nc, v, s, c, buf) == NC_NOERR) ? 0 : -3;
+    }
+  }
+  nc_close(nc);
+  return rc;
+}
+
+int Backend::Serial::readPlain(const std::string& path, const std::string& var,
+                               int timelevel, int n, double* buf) {
+  int nc, v;
+  if (nc_open(path.c_str(), NC_NOWRITE, &nc) != NC_NOERR) return -1;
+  int rc = sFindVarCI(nc, var, &v, nullptr);
+  if (rc == 0) {
+    int nd = 0, unlim = -1, dimids[NC_MAX_VAR_DIMS];
+    nc_inq_varndims(nc, v, &nd);
+    nc_inq_vardimid(nc, v, dimids);
+    nc_inq_unlimdim(nc, &unlim);
+    bool has_t = false;
+    for (int k = 0; k < nd; ++k)
+      if (unlim >= 0 && dimids[k] == unlim) has_t = true;
+    size_t s[4] = {0, 0, 0, 0}, c[4] = {1, 1, 1, 1};
+    int k0 = 0;
+    if (has_t && nd > 0) {
+      s[0] = (size_t)(timelevel > 0 ? timelevel - 1 : 0);
+      k0 = 1;
+    }
+    if (nd > k0) c[nd - 1] = (size_t)n;
+    rc = (nc_get_vara_double(nc, v, s, c, buf) == NC_NOERR) ? 0 : -2;
+  }
+  nc_close(nc);
+  return rc;
 }
 
 }  // namespace IO
