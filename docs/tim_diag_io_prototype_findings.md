@@ -146,6 +146,19 @@ pass"). Every entry cites how it was established (spike test, run, measurement).
   cross-read gates pass). Production options: PIO fill investigation, or one
   explicit fill pass over the coverage complement (context can compute it).
 
+## Q6 — Iotask sweep (cesm_t232 restart reads, 768 ranks, tactical code)
+
+- TIM_PIO_NTASKS: 8 -> 5.48 s, **32 -> 1.32 s**, 96 -> 3.72 s, 192 (=nprocs/4
+  default) -> 4.68 s. FMS reference: 3.15 s. **The entire "TIM slower at 768"
+  result was the iotask default; at 32 iotasks TIM reads 2.4x faster than FMS
+  at 768 ranks.** Too many iotasks costs far more than too few (rearranger
+  fan-in + per-open collectives). Default now capped at 64; production policy
+  should scale iotasks with data volume, not rank count.
+- Operational hazard confirmed: queued PBS jobs resolve the binary path at
+  START; the NTASKS=192 leg died exit-127 by racing a rebuild that had deleted
+  the binary. Freeze binary copies for queued jobs (t112 jobs resubmitted
+  against a frozen copy, read job with TIM_PIO_NTASKS=128).
+
 ## Q6 addendum — 768-rank read result (cesm_t232)
 
 - At 768 ranks (batch, premium): FMS 3.151 s vs TIM 4.683 s max — **TIM 1.5x SLOWER**,
