@@ -121,6 +121,17 @@ int Backend::dimLen(FileId f, int dimid, long long* len) {
   return rc;
 }
 int Backend::unlimDim(FileId f, int* dimid) { return PIOc_inq_unlimdim(f, dimid); }
+int Backend::numDims(FileId f, int* n) { return PIOc_inq_ndims(f, n); }
+int Backend::getAttText(FileId f, VarId v, const std::string& name,
+                        std::string* out) {
+  PIO_Offset len = 0;
+  int rc = PIOc_inq_attlen(f, v, name.c_str(), &len);
+  if (rc != PIO_NOERR) return rc;
+  std::vector<char> buf((size_t)len + 1, '\0');
+  rc = PIOc_get_att_text(f, v, name.c_str(), buf.data());
+  if (rc == PIO_NOERR) *out = std::string(buf.data(), (size_t)len);
+  return rc;
+}
 
 int Backend::setFrame(FileId f, VarId v, int frame) {
   return PIOc_setframe(f, v, frame);

@@ -9,6 +9,9 @@ extern "C" {
    from MOM_infra_init. Ensemble-safe: each member passes its own pelist. */
 void tim_io_init(int fcomm);
 
+/* Configuration lookup (TIM_input / ParmParse table; env overrides). */
+int tim_io_cfg_bool(const char* key, const char* env, int def);
+
 int tim_io_register_domain(int nig, int njg, int isc, int iec, int jsc,
                                 int jec, int symmetric);
 
@@ -24,6 +27,18 @@ int tim_io_read_plain(const char* path, const char* varname,
                            int timelevel, int n, double* buf);
 
 int tim_io_var_exists(const char* path, const char* varname);
+
+/* ---- inquiry (read files; held open in the context cache) ---- */
+int tim_io_file_exists(const char* path);
+int tim_io_file_info(const char* path, int* ndims, int* nvars, int* ntimes);
+int tim_io_file_times(const char* path, double* buf, int n);
+int tim_io_file_var_name(const char* path, int index1, char* out, int maxlen);
+int tim_io_var_att(const char* path, const char* varname, const char* att,
+                   char* out, int maxlen); /* nonzero rc when absent */
+int tim_io_var_sizes(const char* path, const char* varname, int sizes[4]);
+/* Replicated hyperslab; start/nread 1-based, Fortran dim order (x,y,z,t). */
+int tim_io_read_slab(const char* path, const char* varname, const int start[4],
+                     const int nread[4], double* buf);
 
 void tim_io_finalize(void);
 

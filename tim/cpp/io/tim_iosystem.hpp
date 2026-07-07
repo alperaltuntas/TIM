@@ -16,7 +16,11 @@ class DecompCache;
 
 class IoSystem {
  public:
-  explicit IoSystem(MPI_Comm comm);
+  struct Options {
+    int niotasks = -1;  // -1: auto = min(nprocs/4, 64) (see sweep findings)
+  };
+  explicit IoSystem(MPI_Comm comm) : IoSystem(comm, Options{}) {}
+  IoSystem(MPI_Comm comm, const Options& opts);
   ~IoSystem();
   IoSystem(const IoSystem&) = delete;
   IoSystem& operator=(const IoSystem&) = delete;
@@ -26,10 +30,9 @@ class IoSystem {
   DecompCache& decomps() { return *decomps_; }
 
  private:
-  // Iotask policy, isolated for tuning: currently nprocs/4 with env override
-  // (TIM_PIO_NTASKS). Finding pending from the 768-rank sweep: the count
-  // should scale with data volume, not rank count.
-  static int chooseIoTasks(int nprocs);
+  // Iotask policy, isolated for tuning; sweep evidence says cap the
+  // rank-based default (production: scale with data volume instead).
+  static int chooseIoTasks(int nprocs, const Options& opts);
 
   MPI_Comm comm_ = MPI_COMM_NULL;
   SysId sys_ = -1;

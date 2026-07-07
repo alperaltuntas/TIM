@@ -92,3 +92,7 @@ settings.json
 *.code-workspace
 # Local History for Visual Studio Code
 .history/
+
+# tim/cpp/core is a source directory, not a core dump
+!tim/cpp/core/
+!tim/cpp/core/*

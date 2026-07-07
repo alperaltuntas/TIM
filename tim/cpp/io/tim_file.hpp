@@ -58,7 +58,23 @@ class File {
                      int nz, int nz2, double* buf, ReadInfo* info = nullptr);
   // Whole (small) variable, replicated to every rank.
   int readPlain(const std::string& varname, int timelevel, int n, double* buf);
+  // Replicated hyperslab; start/count given 1-based in Fortran dim order
+  // (x,y,z,t); trailing entries beyond the variable's rank must be 1.
+  int readSlab(const std::string& varname, const int start[4],
+               const int count[4], double* buf);
   bool hasVar(const std::string& varname_ci) const;
+
+  // ---- inquiry (read files) ----
+  int numDimsInFile() const;
+  int numVarsInFile() const;
+  int numTimesInFile() const;                    // unlimited-dim length (0 if none)
+  int timeValues(double* buf, int n) const;      // unlimited coordinate values
+  int varNameAt(int index0, std::string* name) const;
+  // Text attribute; false when the attribute (or variable) is absent.
+  bool varAttText(const std::string& varname_ci, const std::string& att,
+                  std::string* out) const;
+  // Sizes in Fortran dim order (x first); returns ndims, or -1 if var absent.
+  int varSizes(const std::string& varname_ci, int sizes[4]) const;
 
   // ---- writing (define phase; enddef is implicit at first write) ----
   enum class AxisKind : int { X = 0, Y = 1, Time = 2, Fixed = 3 };

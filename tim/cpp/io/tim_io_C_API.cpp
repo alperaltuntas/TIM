@@ -6,6 +6,7 @@
 // no singletons in the C++ layer; multiple contexts (multiple components in
 // one executable) only need this adapter to grow a handle, not any redesign.
 
+#include "../core/tim_config.hpp"
 #include "../core/tim_domain.hpp"
 #include "tim_io_context.hpp"
 
@@ -26,23 +27,29 @@ using TIM::IO::IoContext;
 
 std::unique_ptr<IoContext> g_ctx;  // owned by tim_io_init/tim_io_finalize
 
+TIM::IO::IoSystem::Options resolveOptions() {
+  // Composition boundary: configuration is resolved HERE (Config = the sole
+  // parser includer) and injected as plain options; TIM classes stay
+  // config-free and unit-testable.
+  TIM::IO::IoSystem::Options o;
+  o.niotasks = TIM::Config::getInt("tim.io.pio_ntasks", -1, "TIM_PIO_NTASKS");
+  return o;
+}
+
 IoContext& ctx() {
   if (!g_ctx) {
     // Fallback for standalone tools that skip tim_io_init.
     std::fprintf(stderr,
                  "tim_io: WARNING: tim_io_init was not called; using "
                  "MPI_COMM_WORLD\n");
-    g_ctx = std::make_unique<IoContext>(MPI_COMM_WORLD);
+    g_ctx = std::make_unique<IoContext>(MPI_COMM_WORLD, resolveOptions());
   }
   return *g_ctx;
 }
 
 bool debugOn() {
   static int on = -1;
-  if (on < 0) {
-    const char* s = std::getenv("TIM_IO_DEBUG");
-    on = (s && s[0] == '1') ? 1 : 0;
-  }
+  if (on < 0) on = TIM::Config::getBool("tim.io.debug", false, "TIM_IO_DEBUG") ? 1 : 0;
   return on == 1;
 }
 
@@ -55,7 +62,14 @@ extern "C" {
 void tim_io_init(int fcomm) {
   if (g_ctx) return;
   g_ctx = std::make_unique<IoContext>(
-      fcomm < 0 ? MPI_COMM_WORLD : MPI_Comm_f2c((MPI_Fint)fcomm));
+      fcomm < 0 ? MPI_COMM_WORLD : MPI_Comm_f2c((MPI_Fint)fcomm),
+      resolveOptions());
+}
+
+/* Configuration lookup for the Fortran seam (env name may be empty). */
+int tim_io_cfg_bool(const char* key, const char* env, int def) {
+  return TIM::Config::getBool(key, def != 0,
+                              (env && env[0]) ? env : nullptr) ? 1 : 0;
 }
 
 void tim_io_finalize() { g_ctx.reset(); }
@@ -95,6 +109,59 @@ int tim_io_read_plain(const char* path, const char* varname, int timelevel,
 int tim_io_var_exists(const char* path, const char* varname) {
   File* f = ctx().readFile(path);
   return (f && f->hasVar(varname)) ? 1 : 0;
+}
+
+int tim_io_file_exists(const char* path) {
+  return ctx().readFile(path) ? 1 : 0;
+}
+
+int tim_io_file_info(const char* path, int* ndims, int* nvars, int* ntimes) {
+  File* f = ctx().readFile(path);
+  if (!f) return -1;
+  if (ndims) *ndims = f->numDimsInFile();
+  if (nvars) *nvars = f->numVarsInFile();
+  if (ntimes) *ntimes = f->numTimesInFile();
+  return 0;
+}
+
+int tim_io_file_times(const char* path, double* buf, int n) {
+  File* f = ctx().readFile(path);
+  return f ? f->timeValues(buf, n) : -1;
+}
+
+int tim_io_file_var_name(const char* path, int index1, char* out, int maxlen) {
+  File* f = ctx().readFile(path);
+  if (!f) return -1;
+  std::string name;
+  if (f->varNameAt(index1 - 1, &name) != 0) return -1;
+  std::snprintf(out, (size_t)maxlen, "%s", name.c_str());
+  return 0;
+}
+
+int tim_io_var_att(const char* path, const char* varname, const char* att,
+                   char* out, int maxlen) {
+  File* f = ctx().readFile(path);
+  if (!f) return -1;
+  std::string val;
+  if (!f->varAttText(varname, att, &val)) return -1;
+  std::snprintf(out, (size_t)maxlen, "%s", val.c_str());
+  return 0;
+}
+
+int tim_io_var_sizes(const char* path, const char* varname, int sizes[4]) {
+  File* f = ctx().readFile(path);
+  return f ? f->varSizes(varname, sizes) : -1;
+}
+
+int tim_io_read_slab(const char* path, const char* varname, const int start[4],
+                     const int nread[4], double* buf) {
+  File* f = ctx().readFile(path);
+  if (!f) return -1;
+  if (debugOn())
+    std::fprintf(stderr, "TIM_IO read_sl  %s:%s [%d,%d,%d,%d]+[%d,%d,%d,%d]\n",
+                 path, varname, start[0], start[1], start[2], start[3],
+                 nread[0], nread[1], nread[2], nread[3]);
+  return f->readSlab(varname, start, nread, buf);
 }
 
 /* ---- write path ---- */

@@ -22,7 +22,10 @@ namespace IO {
 
 class IoContext {
  public:
-  explicit IoContext(MPI_Comm comm) : sys_(std::make_unique<IoSystem>(comm)) {}
+  explicit IoContext(MPI_Comm comm)
+      : sys_(std::make_unique<IoSystem>(comm)) {}
+  IoContext(MPI_Comm comm, const IoSystem::Options& opts)
+      : sys_(std::make_unique<IoSystem>(comm, opts)) {}
   ~IoContext() {
     // Files (borrowing the IoSystem) must die before it does.
     read_cache_.clear();

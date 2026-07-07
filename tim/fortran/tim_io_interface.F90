@@ -6,8 +6,12 @@ use, intrinsic :: iso_c_binding, only : c_int, c_double, c_char, c_null_char
 
 implicit none ; private
 
+public :: tim_io_init, tim_io_cfg_bool
 public :: tim_io_register_domain, tim_io_read_decomposed
 public :: tim_io_read_plain, tim_io_var_exists, tim_io_finalize
+public :: tim_io_file_exists, tim_io_file_info, tim_io_file_times
+public :: tim_io_file_var_name, tim_io_var_att, tim_io_var_sizes
+public :: tim_io_read_slab
 public :: tim_io_createfile, tim_io_def_axis, tim_io_def_var
 public :: tim_io_put_global_att, tim_io_write_axis, tim_io_var_stagger
 public :: tim_io_write_decomposed, tim_io_write_plain, tim_io_closefile
@@ -15,6 +19,18 @@ public :: tim_io_file_num_times, tim_io_file_time
 public :: cstr
 
 interface
+  subroutine tim_io_init(fcomm) bind(C, name="tim_io_init")
+    import :: c_int
+    integer(c_int), value :: fcomm
+  end subroutine
+
+  integer(c_int) function tim_io_cfg_bool(key, env, def) &
+      bind(C, name="tim_io_cfg_bool")
+    import :: c_int, c_char
+    character(kind=c_char), intent(in) :: key(*), env(*)
+    integer(c_int), value :: def
+  end function
+
   integer(c_int) function tim_io_register_domain(nig, njg, isc, iec, jsc, jec, &
       symmetric) bind(C, name="tim_io_register_domain")
     import :: c_int
@@ -47,6 +63,57 @@ interface
 
   subroutine tim_io_finalize() bind(C, name="tim_io_finalize")
   end subroutine
+
+  integer(c_int) function tim_io_file_exists(path) bind(C, name="tim_io_file_exists")
+    import :: c_int, c_char
+    character(kind=c_char), intent(in) :: path(*)
+  end function
+
+  integer(c_int) function tim_io_file_info(path, ndims, nvars, ntimes) &
+      bind(C, name="tim_io_file_info")
+    import :: c_int, c_char
+    character(kind=c_char), intent(in) :: path(*)
+    integer(c_int), intent(out) :: ndims, nvars, ntimes
+  end function
+
+  integer(c_int) function tim_io_file_times(path, buf, n) &
+      bind(C, name="tim_io_file_times")
+    import :: c_int, c_char, c_double
+    character(kind=c_char), intent(in) :: path(*)
+    real(c_double), intent(inout) :: buf(*)
+    integer(c_int), value :: n
+  end function
+
+  integer(c_int) function tim_io_file_var_name(path, index1, out, maxlen) &
+      bind(C, name="tim_io_file_var_name")
+    import :: c_int, c_char
+    character(kind=c_char), intent(in) :: path(*)
+    integer(c_int), value :: index1, maxlen
+    character(kind=c_char), intent(inout) :: out(*)
+  end function
+
+  integer(c_int) function tim_io_var_att(path, varname, att, out, maxlen) &
+      bind(C, name="tim_io_var_att")
+    import :: c_int, c_char
+    character(kind=c_char), intent(in) :: path(*), varname(*), att(*)
+    integer(c_int), value :: maxlen
+    character(kind=c_char), intent(inout) :: out(*)
+  end function
+
+  integer(c_int) function tim_io_var_sizes(path, varname, sizes) &
+      bind(C, name="tim_io_var_sizes")
+    import :: c_int, c_char
+    character(kind=c_char), intent(in) :: path(*), varname(*)
+    integer(c_int), intent(inout) :: sizes(4)
+  end function
+
+  integer(c_int) function tim_io_read_slab(path, varname, start, nread, buf) &
+      bind(C, name="tim_io_read_slab")
+    import :: c_int, c_char, c_double
+    character(kind=c_char), intent(in) :: path(*), varname(*)
+    integer(c_int), intent(in) :: start(4), nread(4)
+    real(c_double), intent(inout) :: buf(*)
+  end function
 
   ! ---- write path (stateful file handles) ----
   integer(c_int) function tim_io_createfile(path, domain_handle, mode) &

@@ -216,6 +216,86 @@ int File::readPlain(const std::string& varname, int timelevel, int n,
   return Backend::getVaraDouble(id_, v, start, count, nd > 0 ? nd : 1, buf);
 }
 
+int File::readSlab(const std::string& varname, const int start[4],
+                   const int count[4], double* buf) {
+  VarId v;
+  if (findVarCI(varname, &v) != 0) return -1;
+  int nd = 0;
+  Backend::varNumDims(id_, v, &nd);
+  if (nd < 1 || nd > 4) return -2;
+  long long s[4] = {0, 0, 0, 0}, c[4] = {1, 1, 1, 1};
+  for (int k = 0; k < nd; ++k) {  // Fortran dim k (x first) = file dim nd-1-k
+    s[nd - 1 - k] = start[k] - 1;
+    c[nd - 1 - k] = count[k];
+  }
+  return Backend::getVaraDouble(id_, v, s, c, nd, buf);
+}
+
+int File::numDimsInFile() const {
+  int n = 0;
+  Backend::numDims(id_, &n);
+  return n;
+}
+
+int File::numVarsInFile() const {
+  int n = 0;
+  Backend::numVars(id_, &n);
+  return n;
+}
+
+int File::numTimesInFile() const {
+  int ud = -1;
+  Backend::unlimDim(id_, &ud);
+  if (ud < 0) return 0;
+  long long len = 0;
+  Backend::dimLen(id_, ud, &len);
+  return (int)len;
+}
+
+int File::timeValues(double* buf, int n) const {
+  int ud = -1;
+  Backend::unlimDim(id_, &ud);
+  if (ud < 0) return -1;
+  // the unlimited coordinate variable shares the dim's position by convention
+  int nvars = numVarsInFile();
+  for (VarId v = 0; v < nvars; ++v) {
+    int nd = 0, dimids[8];
+    Backend::varNumDims(id_, v, &nd);
+    Backend::varDimIds(id_, v, dimids);
+    if (nd == 1 && dimids[0] == ud) {
+      long long s = 0, c = n;
+      return Backend::getVaraDouble(id_, v, &s, &c, 1, buf);
+    }
+  }
+  return -1;
+}
+
+int File::varNameAt(int index0, std::string* name) const {
+  return Backend::varName(id_, index0, name);
+}
+
+bool File::varAttText(const std::string& varname, const std::string& att,
+                      std::string* out) const {
+  VarId v;
+  if (findVarCI(varname, &v) != 0) return false;
+  return Backend::getAttText(id_, v, att, out) == 0;
+}
+
+int File::varSizes(const std::string& varname, int sizes[4]) const {
+  VarId v;
+  if (findVarCI(varname, &v) != 0) return -1;
+  int nd = 0, dimids[8];
+  Backend::varNumDims(id_, v, &nd);
+  Backend::varDimIds(id_, v, dimids);
+  if (nd > 4) nd = 4;
+  for (int k = 0; k < nd; ++k) {  // Fortran order: x first = last file dim
+    long long len = 0;
+    Backend::dimLen(id_, dimids[nd - 1 - k], &len);
+    sizes[k] = (int)len;
+  }
+  return nd;
+}
+
 int File::defineAxis(const std::string& name, AxisKind kind, Stagger position,
                      int fixed_len, const std::string& units,
                      const std::string& longname, const std::string& cartesian,

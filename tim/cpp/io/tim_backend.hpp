@@ -65,6 +65,9 @@ struct Backend {
   static int varDimIds(FileId, VarId, int* dimids /*>=8*/);
   static int dimLen(FileId, int dimid, long long*);
   static int unlimDim(FileId, int* dimid_or_minus1);
+  static int numDims(FileId, int*);
+  // Text attribute of a var (or globalAtts()); nonzero rc when absent.
+  static int getAttText(FileId, VarId, const std::string& name, std::string* out);
 
   // --- data ---
   static int setFrame(FileId, VarId, int frame0);
