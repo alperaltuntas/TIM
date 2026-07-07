@@ -18,10 +18,10 @@ interface
   end function
 
   integer(c_int) function tim_io_read_decomposed(path, varname, domain_handle, &
-      stagger, timelevel, nz, buf) bind(C, name="tim_io_read_decomposed")
+      stagger, timelevel, nz, nz2, buf) bind(C, name="tim_io_read_decomposed")
     import :: c_int, c_char, c_double
     character(kind=c_char), intent(in) :: path(*), varname(*)
-    integer(c_int), value :: domain_handle, stagger, timelevel, nz
+    integer(c_int), value :: domain_handle, stagger, timelevel, nz, nz2
     real(c_double), intent(inout) :: buf(*)
   end function
 

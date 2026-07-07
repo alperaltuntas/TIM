@@ -23,6 +23,16 @@ static std::vector<DomainInfo> domains;
 // (domain_handle, stagger, nz) -> ioid; tactical decomp cache
 static std::map<long long, int> decomp_cache;
 
+static bool amRoot() {
+  int r; MPI_Comm_rank(MPI_COMM_WORLD, &r); return r == 0;
+}
+
+static bool debugOn() {
+  static int on = -1;
+  if (on < 0) { const char* s = std::getenv("TIM_IO_DEBUG"); on = (s && s[0] == '1') ? 1 : 0; }
+  return on == 1;
+}
+
 static void ensureInit() {
   if (iosysid >= 0) return;
   int nprocs;
@@ -95,9 +105,14 @@ static bool componentWindow(const DomainInfo& d, int stagger, int comp,
   return false;
 }
 
-static int getDecomp(int domain_handle, int stagger, int nz, int comp) {
-  const long long key = ((long long)domain_handle << 40) |
-                        ((long long)stagger << 32) | ((long long)comp << 24) | nz;
+// nz = total trailing (non-horizontal) extent = nz1*nz2; nz2 > 1 means the
+// file variable is 4-d (x,y,z1,z2 in Fortran order => t,z2,z1,y,x on file);
+// the flat file index is identical either way, but PIO wants the decomp's
+// ndims to match the variable, so the gdims list is built accordingly.
+static int getDecomp(int domain_handle, int stagger, int nz, int nz2, int comp) {
+  const long long key = ((long long)domain_handle << 44) |
+                        ((long long)stagger << 40) | ((long long)comp << 36) |
+                        ((long long)nz2 << 20) | nz;
   auto it = decomp_cache.find(key);
   if (it != decomp_cache.end()) return it->second;
 
@@ -115,12 +130,17 @@ static int getDecomp(int domain_handle, int stagger, int nz, int comp) {
       for (int i = is; i <= ie; ++i)
         dof.push_back((PIO_Offset)k * gnx * gny + (PIO_Offset)(j - 1) * gnx + i);
 
-  int gdims2[2] = {gny, gnx};
-  int gdims3[3] = {nz, gny, gnx};
+  const int nz1 = (nz2 > 1) ? nz / nz2 : nz;
+  int gdims[4] = {gny, gnx, 0, 0};
+  int ndims = 2;
+  if (nz2 > 1) {
+    ndims = 4; gdims[0] = nz2; gdims[1] = nz1; gdims[2] = gny; gdims[3] = gnx;
+  } else if (nz > 1) {
+    ndims = 3; gdims[0] = nz; gdims[1] = gny; gdims[2] = gnx;
+  }
   static PIO_Offset dummy = 0;  // zero-maplen ranks need a non-null pointer
   int ioid, rearr = PIO_REARR_BOX;
-  int rc = PIOc_InitDecomp(iosysid, PIO_DOUBLE, nz > 1 ? 3 : 2,
-                           nz > 1 ? gdims3 : gdims2, (int)dof.size(),
+  int rc = PIOc_InitDecomp(iosysid, PIO_DOUBLE, ndims, gdims, (int)dof.size(),
                            dof.empty() ? &dummy : dof.data(), &ioid, &rearr,
                            nullptr, nullptr);
   if (rc != PIO_NOERR) {
@@ -171,11 +191,14 @@ static int openAndFind(const std::string& path, const std::string& varname,
 
 int readDecomposed(const std::string& path, const std::string& varname,
                    int domain_handle, int stagger, int timelevel, int nz,
-                   double* buf) {
+                   int nz2, double* buf) {
   int ncid, varid;
   bool has_t = false;
   int rc = openAndFind(path, varname, &ncid, &varid, &has_t);
   if (rc != PIO_NOERR) return rc;
+  if (debugOn() && amRoot())
+    std::fprintf(stderr, "TIM_IO read_dd  %s:%s stag=%d nz=%d nz2=%d tl=%d\n",
+                 path.c_str(), varname.c_str(), stagger, nz, nz2, timelevel);
 
   const DomainInfo& d = domains[(size_t)domain_handle];
   int gnx, gny, ws, we, wjs, wje;
@@ -193,7 +216,7 @@ int readDecomposed(const std::string& path, const std::string& varname,
     if (!componentWindow(d, stagger, comp, is, ie, js, je)) continue;
     const int ni = ie - is + 1, nj = je - js + 1;
     const PIO_Offset maplen = (PIO_Offset)ni * nj * nz;
-    int ioid = getDecomp(domain_handle, stagger, nz, comp);
+    int ioid = getDecomp(domain_handle, stagger, nz, nz2, comp);
     piece.assign((size_t)maplen, 0.0);
     rc = PIOc_read_darray(ncid, varid, ioid, maplen,
                           maplen ? piece.data() : &dummyd);
@@ -215,6 +238,9 @@ int readDecomposed(const std::string& path, const std::string& varname,
 
 int readPlain(const std::string& path, const std::string& varname,
               int timelevel, int n, double* buf) {
+  if (debugOn() && amRoot())
+    std::fprintf(stderr, "TIM_IO read_pl  %s:%s n=%d tl=%d\n", path.c_str(),
+                 varname.c_str(), n, timelevel);
   int ncid, varid;
   bool has_t = false;
   int rc = openAndFind(path, varname, &ncid, &varid, &has_t);
@@ -267,9 +293,9 @@ int tim_io_register_domain(int nig, int njg, int isc, int iec, int jsc,
 
 int tim_io_read_decomposed(const char* path, const char* varname,
                                 int domain_handle, int stagger, int timelevel,
-                                int nz, double* buf) {
+                                int nz, int nz2, double* buf) {
   return TIM::IO::readDecomposed(path, varname, domain_handle, stagger,
-                                      timelevel, nz, buf);
+                                 timelevel, nz, nz2, buf);
 }
 
 int tim_io_read_plain(const char* path, const char* varname,

@@ -89,7 +89,22 @@ pass"). Every entry cites how it was established (spike test, run, measurement).
 
 ## Q3 — MOM6 dispatch reality (MOM_io_infra.F90)
 
-- TBD (spine work).
+- All read variants now dispatch to TIM under TIM_IO_READ=1:
+  read_field_{0d,1d,2d,3d,4d}, read_field_{0d,1d}_int (replicated PIO get_vara,
+  int conversion in the wrapper), read_vector_{2d,3d} (two staggered reads with
+  CGRID/BGRID/AGRID position mapping). NOT dispatched (still FMS): the region
+  reads (read_field_{2d,3d}_region) — not on the restart path; scope when a real
+  consumer appears (MOM_horizontal_regridding global slabs) — plus the query/
+  metadata paths (open_file/get_file_times/get_file_fields).
+- 4-d vars: file dims are (t,z2,z1,y,x); the flat file index is the same as a
+  flattened nz=nz1*nz2 3-d read, but PIO requires the decomp ndims to match the
+  variable, so the decomp is built with 4 gdims. (Untested until a 4d consumer
+  appears — cesm_t232.)
+- Coverage evidence (TIM_IO_DEBUG=1, double_gyre restart continuation, still
+  bit-identical): 13 decomposed reads (h/sfc/ave_ssh center; u/u2/ubtav/diffu/CAu
+  east-face; v/v2/vbtav/diffv/CAv north-face; nz=1 and nz=2) + 2 plain scalar
+  reads (First_direction, DTBT). Corner, 4d, and read_vector paths await a
+  consumer (cesm_t232).
 
 ## Q4 — FMS diag semantics (windows, average_T1/T2, accumulation order)
 

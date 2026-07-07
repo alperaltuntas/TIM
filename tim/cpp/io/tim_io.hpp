@@ -28,7 +28,7 @@ int registerDomain(const DomainInfo& d);   // -> handle (>=0)
 // Returns 0 on success, nonzero PIO error code otherwise (message on stderr).
 int readDecomposed(const std::string& path, const std::string& varname,
                    int domain_handle, int stagger, int timelevel, int nz,
-                   double* buf);
+                   int nz2, double* buf);
 
 // Replicated read of a whole (small) 0d/1d var on all ranks.
 int readPlain(const std::string& path, const std::string& varname,
