@@ -160,9 +160,15 @@ re-passed bit-identical. Lessons:
   before MPI_Finalize, and a Fortran-driven program has no scope for that —
   io_infra_end must call tim_io_finalize() (missing it aborts inside
   MPI_Finalize). RAII protects the error paths; the happy path needs the hook.
-- **IoSystem as explicit-lifetime singleton (not scoped RAII)** is honest about
-  the Fortran-driven lifetime; revisit only when ensembles force multiple
-  iosystems.
+- **Singletons eliminated (ensemble requirement)**: IoSystem is a plain RAII
+  object on an explicit communicator; File borrows its IoSystem; IoContext owns
+  iosystem + domain registry + file caches. The bind(C) adapter holds ONE
+  explicitly-created context per component (tim_io_init(localcomm) from
+  MOM_infra_init / tim_io_finalize from io_infra_end) — CESM ensemble members
+  each get their member-pelist iosystem. The only remaining static is the
+  adapter's context pointer, which is the honest minimum at a bind(C) boundary
+  where Fortran carries no handle; multiple components in one executable only
+  need the adapter to grow a handle.
 - **Keeping the C API stable made the redesign cheap to validate** (all gates
   reran unchanged) — evidence for the plan's "narrow bind(C) surface as the
   seam" bet.
