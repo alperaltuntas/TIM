@@ -138,6 +138,35 @@ pass"). Every entry cites how it was established (spike test, run, measurement).
   the prototype reopens per read; the production File abstraction naturally holds the
   file open). Tuning runs queued (TIM_PIO_NTASKS sweep).
 
+## Design iteration (second pass, 2026-07-07): which abstractions survived
+
+The tactical spine was reimplemented behind the SAME C API as five components:
+`core/tim_domain` (Decomp2D + Stagger + Window value types with all extent
+logic as methods), `io/tim_backend` (only pio.h includer; typed thin wrapper
+over the PIO2/SCORPIO-shared subset), `io/tim_iosystem` (explicit-lifetime
+singleton owning the DecompCache; iotask policy isolated in one function),
+`io/tim_decomp_cache` (owns the ReadComponent/WritePartition families), and
+`io/tim_file` (deep, move-only RAII File: factories return optional, implicit
+enddef, internal record management, file-stagger sniffing, axis/var registry).
+All double_gyre gates (read, write, cross-read) and the cesm_t232 128-rank A/B
+re-passed bit-identical. Lessons:
+- **Decomp2D as the geometry oracle worked extremely well**: window /
+  readComponents / writePartition as METHODS killed the triplicated index
+  arithmetic of the tactical code; the C++ diff is dramatic.
+- **Held-open File cache (adapter-level policy): 128-rank seam reads dropped
+  1.75 s → 1.51 s vs FMS 4.45 s (2.9x)**; also the right structural answer to
+  the 768-rank open/close overhead (sweep results pending).
+- **RAII needs an explicit finalize seam anyway**: PIO resources must die
+  before MPI_Finalize, and a Fortran-driven program has no scope for that —
+  io_infra_end must call tim_io_finalize() (missing it aborts inside
+  MPI_Finalize). RAII protects the error paths; the happy path needs the hook.
+- **IoSystem as explicit-lifetime singleton (not scoped RAII)** is honest about
+  the Fortran-driven lifetime; revisit only when ensembles force multiple
+  iosystems.
+- **Keeping the C API stable made the redesign cheap to validate** (all gates
+  reran unchanged) — evidence for the plan's "narrow bind(C) surface as the
+  seam" bet.
+
 ## Q4 — FMS diag semantics (windows, average_T1/T2, accumulation order)
 
 - TBD.

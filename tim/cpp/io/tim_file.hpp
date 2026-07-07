@@ -1,0 +1,108 @@
+#pragma once
+// TIM::IO::File — the deep module of TIM I/O (prototype design pass).
+//
+// One class stands in for FMS's plain-file/domain-file split, the netCDF
+// define/data mode dance, record (unlimited-dim) management, case-insensitive
+// variable lookup, file-vs-domain staggering reconciliation, and the
+// decomposition bookkeeping of parallel reads and writes. Callers see
+// open/define/read/write/close; everything else is hidden.
+//
+// RAII: move-only; the destructor closes. A File is either reading or
+// writing, never both. All methods are collective over the iosystem.
+
+#include "../core/tim_domain.hpp"
+#include "tim_backend.hpp"
+
+#include <map>
+#include <optional>
+#include <string>
+
+namespace TIM {
+namespace IO {
+
+class File {
+ public:
+  enum class Mode : int { Write = 0, Overwrite = 1, Append = 2 };
+
+  // Factories. Absence and failure are the same non-event for reads:
+  // "no File" (std::nullopt), never a half-open object.
+  static std::optional<File> openForRead(const std::string& path);
+  static std::optional<File> create(const std::string& path, int domainKey,
+                                    const Decomp2D& domain, Mode mode);
+
+  File(File&& o) noexcept { *this = std::move(o); }
+  File& operator=(File&& o) noexcept;
+  File(const File&) = delete;
+  File& operator=(const File&) = delete;
+  ~File() { close(); }
+
+  int close();  // idempotent; also called by the destructor
+
+  // ---- reading ----
+  struct ReadInfo {
+    int file_sx = 0;  // file's staggered axes carry the symmetric +1 point?
+    int file_sy = 0;  //   (when 0 for a staggered var, the window's low-edge
+                      //    line is left unfilled; the model halo-fills it)
+  };
+  // Fill the caller's staggered window buffer (Decomp2D::window(stagger)
+  // layout, x fastest, then y, then k). The FILE decides the staggered axis
+  // sizes (size-sniffed); the caller's window layout is fixed by the domain.
+  int readDecomposed(const std::string& varname, int domainKey,
+                     const Decomp2D& domain, Stagger stagger, int timelevel,
+                     int nz, int nz2, double* buf, ReadInfo* info = nullptr);
+  // Whole (small) variable, replicated to every rank.
+  int readPlain(const std::string& varname, int timelevel, int n, double* buf);
+  bool hasVar(const std::string& varname_ci) const;
+
+  // ---- writing (define phase; enddef is implicit at first write) ----
+  enum class AxisKind : int { X = 0, Y = 1, Time = 2, Fixed = 3 };
+  int defineAxis(const std::string& name, AxisKind kind, Stagger position,
+                 int fixed_len, const std::string& units,
+                 const std::string& longname, const std::string& cartesian,
+                 std::optional<int> sense);
+  // dims: axis names in Fortran order (x first); staggering, z-extents and
+  // record-ness of the variable are derived from the named axes.
+  int defineVar(const std::string& name, const std::vector<std::string>& dims,
+                const std::string& units, const std::string& longname,
+                const std::string& standard_name, bool single_precision,
+                const std::string& checksum_hex);
+  int putGlobalAtt(const std::string& name, const std::string& value);
+
+  // ---- writing (data phase) ----
+  int writeAxis(const std::string& name, const double* global_values, int n);
+  // Window-buffer layout identical to readDecomposed's. Record management is
+  // internal (FMS write_time_if_later semantics) when tstamp is provided.
+  int writeDecomposed(const std::string& varname, const double* buf,
+                      std::optional<double> tstamp);
+  int writePlain(const std::string& varname, const double* data, int n,
+                 std::optional<double> tstamp);
+
+  Stagger varStagger(const std::string& varname) const;  // registered vars
+  int numTimes() const { return num_times_; }
+  double fileTime() const { return file_time_; }
+
+ private:
+  File() = default;
+  int endDef();
+  int findVarCI(const std::string& name_ci, VarId* v,
+                std::string* actual = nullptr) const;
+  bool varHasUnlim(VarId v) const;
+  int frameForTime(std::optional<double> tstamp);
+
+  FileId id_ = -1;
+  bool writable_ = false;
+  bool in_def_ = false;
+  int domain_key_ = -1;
+  Decomp2D domain_;
+  int num_times_ = 0;
+  double file_time_ = 0.0;
+  std::string unlim_name_;
+
+  struct AxisInfo { AxisKind kind; Stagger position; int len; };
+  struct VarInfo { Stagger stagger; int nz, nz2; bool has_time; };
+  std::map<std::string, AxisInfo> axes_;
+  std::map<std::string, VarInfo> vars_;
+};
+
+}  // namespace IO
+}  // namespace TIM
