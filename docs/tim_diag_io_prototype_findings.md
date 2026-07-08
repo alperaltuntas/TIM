@@ -245,7 +245,17 @@ re-passed bit-identical. Lessons:
 
 ## Q4 — FMS diag semantics (windows, average_T1/T2, accumulation order)
 
-- TBD.
+- Answered: the full behavioral spec (12 reproduce-exactly rules with FMS
+  source citations) lives in docs/fms_diag_semantics.md; Accumulator and
+  DiagManager implement it and cite it. File-format details were additionally
+  pinned against real FMS-written history files (double_gyre prog, cesm_t232
+  h.sfc): diag files carry `axis`/`positive` axis attributes (NOT the
+  `cartesian_axis`/`sense` pair fms2_io restarts use), time gets
+  units-since-base + lowercase `calendar` + `bounds="time_bounds"`, the
+  bounds dim/coordinate is `nbnd` (values 1,2), average_DT's units are the
+  bare unit name, and every data var carries _FillValue AND missing_value
+  typed by packing (registered missing else CMOR 1e20). FMS appends
+  " time: mean|point|..." to the MOM-supplied cell_methods attribute.
 
 ## Q4/Q5 — Accumulator implemented (designed) + fp-model discipline finding
 
@@ -265,7 +275,60 @@ re-passed bit-identical. Lessons:
 
 ## Q5 — Restart-spanning accumulator state
 
-- TBD.
+- **Unit-level gate PASSED** (manager_test): a run that saveState()s at the
+  middle of an averaging window and restores into a FRESH DiagManager
+  produces records bit-identical to the continuous run — both the
+  restart-spanning window and subsequent ones, including average_T1/T2.
+- Design that makes it work: output windows are anchored on the diag_table
+  base date and walked forward past init_time (FMS anchors at init_time,
+  which is what corrupts its restarted windows). Identical to FMS whenever a
+  run starts on a window boundary — always true in practice — and coherent
+  across arbitrary restart points. The state file stores, per stream, the
+  accumulation buffer (+ mask_variant counter) through the SAME decomposed
+  write path as everything else, count0d/num_elements, and the window trio;
+  matching is by (module, field, file, output_name), so table edits degrade
+  to fresh windows instead of errors.
+- Remaining for the integration gate: double_gyre continuous-vs-mid-window
+  restart A/B through MOM6, and a mid-month cesm_t232 restart.
+
+## DiagManager implemented (designed) + backend findings it forced
+
+- tim/cpp/diag/tim_diag_manager.* is the deep module: registration/fan-out
+  (case-insensitive, multi-file), the strict-> window scheduler with midpoint
+  record times, EVERY_TIME/END_OF_RUN, the rollover trio state machine with
+  the close_time/next_open drop gap, a literal port of FMS get_time_string
+  for %-token filenames (unit-checked: ".0001-006" style suffixes incl.
+  cumulative tokens), statics at file close, and the full FMS metadata set.
+  Zero pio.h/AMReX; writes only through TIM::IO::File. AxisRegistry is a dumb
+  value store (tim_diag_axis.hpp); all interpretation is in the manager.
+- Verified end-to-end on 1 rank with real PIO (prototype/diag_probe/
+  manager_test.cpp, `make manager_test CXX=CC`): means/snapshots bit-exact
+  against replayed arithmetic, boundary-sample trigger semantics, >= end
+  flush, statics, scalar streams, attribute plumbing, and the Q5 gate above.
+- **Backend constraint found: PIO rejects (EINVAL) a write_darray fill value
+  that differs from the variable's own _FillValue.** Once diag vars carry
+  registered missing values as fills, the old hardwired NC_FILL_DOUBLE fill
+  argument breaks every decomposed write. The fill now travels with the
+  variable (File::VarInfo) through the seam.
+- **Backend constraint found: the darray path does not convert types** —
+  float (packing=2) variables need float-basetype decompositions. DecompCache
+  keys now include precision; Backend::writeDArray converts the double
+  buffer at the seam. Reads of float vars through readDecomposed would hit
+  the same constraint (not yet exercised — restarts are all double).
+- File gaps the manager exposed, now fixed: per-var numeric/text attribute
+  puts, custom fill+missing on defineVar, rank-1 record variables in
+  writePlain (average_T1 and scalar time series have ONLY the record dim),
+  global-attribute reads for the state file.
+- Known metadata diffs vs FMS files (whitelist candidates for the nccmp
+  gate): time_bounds carries a default _FillValue (FMS: none), attribute
+  order within vars differs, NumFilesInSet absent.
+- Not in the prototype (fails cleanly at registration): regional output,
+  diurnalNN, coarsening. The empty-window case writes the raw buffer with a
+  warning where FMS errors (send_data) — FMS itself writes the raw buffer at
+  diag end.
+- C++ pitfall re-confirmed (third time): an in-class default argument
+  `const Options& opts = {}` cannot use the class's own default member
+  initializers — use a delegating ctor pair (IoSystem precedent).
 
 ## Q6 — Performance at production scale (cesm_t232, 768 ranks)
 
