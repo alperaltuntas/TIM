@@ -330,6 +330,39 @@ re-passed bit-identical. Lessons:
   `const Options& opts = {}` cannot use the class's own default member
   initializers — use a delegating ctor pair (IoSystem precedent).
 
+## Diag seam + double_gyre history bit-identity gate — PASSED
+
+- tim_diag C API (tim/cpp/diag/tim_diag_C_API.*) + tim_diag_interface.F90 +
+  rewritten MOM_diag_manager_infra.F90: whole-run dispatch on tim.diag /
+  TIM_DIAG (default FMS). The bridge owns EAST/NORTH->staggered mapping,
+  FMS is/ie window defaulting + contiguous r8 slicing, rmask pass-through,
+  time_type->days/secs, optional-argument resolution. The diag adapter
+  borrows tim_io_init's IoContext; MOM's shutdown order (diag_manager_end
+  before io_infra_end) keeps the borrow safe.
+- **Gate result (double_gyre, 4 ranks, gnu): all three history files
+  (prog snapshots, ave_prog 5-day means, cont) DATA-IDENTICAL to the FMS
+  control; ocean.stats and available_diags identical; metadata identical
+  except the accepted NumFilesInSet global att.** The weighted means are
+  bit-exact through the full MOM6 stack (mediator remap/masking included).
+- Traps found on the way, each worth keeping:
+  * **Fortran-facing diag ids must be 1-based** — MOM guards every post
+    with `if (id > 0)`, so a 0-based id silently drops the FIRST registered
+    field (one all-zero uh variable in the file, everything else fine).
+  * MOM's mediator registers coarsened (dsamp) axes UNCONDITIONALLY even
+    when no downsampled diag is requested — the seam must return a sentinel
+    axis id, not error at axis definition.
+  * The wrapper cannot know the run start at diag_manager_init (no time
+    argument); the first register_diag_field's init_time pins it, and the
+    manager re-syncs file rollover trios then.
+  * FMS names the bounds variable `<time_axis_name>_bounds` (Time_bounds
+    for double_gyre, time_bounds for cesm) and derives its long_name from
+    the axis name; repeated text attributes PREPEND (cell_methods order).
+  * mkmf does not relink MOM6 when libinfra-TIM changes — rm the executable
+    before rebuilding (re-confirmed).
+- Remaining gates: cesm_t232 monthly incl. rollover/naming (intel, 128+
+  ranks), Q5 through-MOM6 (MOM_diag_save_state/restore_state exported and
+  ready to hook next to save_restart), diag-side Q6 numbers.
+
 ## Q6 — Performance at production scale (cesm_t232, 768 ranks)
 
 - **Read performance, 128 ranks (single node, interactive), cesm_t232 tx2_3v2
