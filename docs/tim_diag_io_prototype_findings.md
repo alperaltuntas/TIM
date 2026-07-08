@@ -247,6 +247,22 @@ re-passed bit-identical. Lessons:
 
 - TBD.
 
+## Q4/Q5 — Accumulator implemented (designed) + fp-model discipline finding
+
+- Accumulator (tim/cpp/diag/tim_diag_reduce.*) implements the FMS spec exactly:
+  scalar per-call counter, masked-point overwrite, rms weight-in-power,
+  mask_variant per-point counters, rmask post-pass, +/-HUGE min/max init,
+  empty-window EMPTY emission, diurnal samples, divide-at-output. Q5
+  persistence (state()/restore()) is first-class; unit-checked incl. the
+  restored-stream-bit-identical property. 13 property checks pass.
+- **Bit-reproducibility build finding**: the intel makefile template sets
+  -fp-model source/-no-fma for Fortran and C but CXXFLAGS was bare
+  -std=c++17 — Intel's default fast fp-model + FMA contraction changes
+  rounding of b += x*w (caught by the unit test failing at -O2 and passing
+  at -fp-model=precise). CXXFLAGS now carries -fp-model precise -no-fma
+  (intel) and -Mnofma -Kieee (nvhpc); gnu defaults are already strict.
+  Any future C++ that does model arithmetic depends on this.
+
 ## Q5 — Restart-spanning accumulator state
 
 - TBD.
