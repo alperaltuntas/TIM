@@ -94,9 +94,20 @@ class DiagManager {
   // case-insensitive. Re-registration returns the existing id.
   // axes: registry ids in Fortran order (x, y, then fixed dims); empty or
   // {kNullAxis} = scalar. Statics pass is_static in opts.
+  // init_time: the field's registration time (FMS register_diag_field
+  // init_time). The FIRST one supplied that is later than the constructor's
+  // init_time advances the manager's window/file anchors — the wrapper calls
+  // MOM_diag_manager_init before the model clock is known, so the real run
+  // start arrives with the first registration.
   int registerField(const std::string& module, const std::string& field,
-                    const std::vector<int>& axes, const FieldOptions& opts);
+                    const std::vector<int>& axes, const FieldOptions& opts,
+                    const TimeStamp* init_time = nullptr);
   int fieldId(const std::string& module, const std::string& field) const;
+  long long fieldNpts(int field_id) const {
+    return (field_id >= 0 && field_id < (int)fields_.size())
+               ? fields_[(size_t)field_id].npts
+               : -1;
+  }
   // Attribute puts before the first write reach the files; repeated text
   // attributes append with a space separator (FMS cell_methods convention).
   void addAttribute(int field_id, const std::string& name,
@@ -179,6 +190,7 @@ class DiagManager {
   };
 
   int streamWindowsInit(Stream& s);
+  int syncFileWindows(OutFile& f);  // advance the rollover trio past init_time_
   int ensureOpen(OutFile& f, const TimeStamp& fname_time, std::string* err);
   int defineFileContents(OutFile& f);
   // Window close for one stream: rollover/drop bookkeeping, the record write,
@@ -196,6 +208,7 @@ class DiagManager {
   IO::IoSystem& sys_;
   Options opts_;
   bool ok_ = false;
+  bool init_seen_ = false;  // a registration has pinned the run start
   std::string error_;
 
   AxisRegistry axes_;

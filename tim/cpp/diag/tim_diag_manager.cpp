@@ -228,23 +228,13 @@ DiagManager::DiagManager(const DiagConfig& config, Calendar cal,
                  "' has new_file_freq but no %-token for the time stamp";
         return;
       }
-      const int dur = fs.file_duration > 0 ? fs.file_duration : fs.new_file_freq;
-      const TimeUnit dur_u =
-          fs.file_duration > 0 ? fs.file_duration_units : fs.new_file_freq_units;
-      auto advance = [&](std::string* aerr) -> bool {
-        if (!addInterval(cal_, f.start_time, fs.new_file_freq,
-                         fs.new_file_freq_units, &f.next_open, aerr))
-          return false;
-        return addInterval(cal_, f.start_time, dur, dur_u, &f.close_time, aerr);
-      };
-      if (!advance(&err)) { error_ = "file '" + fs.name + "': " + err; return; }
+      if (syncFileWindows(f) != 0) {
+        error_ = "file '" + fs.name + "': " + error_;
+        return;
+      }
       if (f.next_open < f.close_time) {
         error_ = "file '" + fs.name + "': close time after next_open";
         return;
-      }
-      while (f.close_time <= init_time_) {
-        f.start_time = f.next_open;
-        if (!advance(&err)) { error_ = "file '" + fs.name + "': " + err; return; }
       }
     } else {
       f.next_open = kFarFuture;
@@ -256,6 +246,28 @@ DiagManager::DiagManager(const DiagConfig& config, Calendar cal,
 }
 
 DiagManager::~DiagManager() = default;
+
+// FMS init_file + sync_file_times: advance whole file periods until the file
+// covers the run start. Assumes f.start_time holds the anchor.
+int DiagManager::syncFileWindows(OutFile& f) {
+  const FileSpec& fs = *f.spec;
+  const int dur = fs.file_duration > 0 ? fs.file_duration : fs.new_file_freq;
+  const TimeUnit dur_u =
+      fs.file_duration > 0 ? fs.file_duration_units : fs.new_file_freq_units;
+  std::string err;
+  auto advance = [&]() -> bool {
+    if (!addInterval(cal_, f.start_time, fs.new_file_freq,
+                     fs.new_file_freq_units, &f.next_open, &err))
+      return false;
+    return addInterval(cal_, f.start_time, dur, dur_u, &f.close_time, &err);
+  };
+  if (!advance()) { error_ = err; return -1; }
+  while (f.close_time <= init_time_) {
+    f.start_time = f.next_open;
+    if (!advance()) { error_ = err; return -1; }
+  }
+  return 0;
+}
 
 int DiagManager::streamWindowsInit(Stream& s) {
   const FileSpec& fs = *files_[(size_t)s.outfile].spec;
@@ -298,7 +310,23 @@ int DiagManager::streamWindowsInit(Stream& s) {
 int DiagManager::registerField(const std::string& module,
                                const std::string& field,
                                const std::vector<int>& axis_ids,
-                               const FieldOptions& opts) {
+                               const FieldOptions& opts,
+                               const TimeStamp* init_time) {
+  // The first registration that carries a time pins the run start (the
+  // wrapper cannot know it at construction); window and file anchors that
+  // were provisionally synced to the constructor's init_time advance.
+  if (init_time && !init_seen_) {
+    init_seen_ = true;
+    if (*init_time > init_time_) {
+      init_time_ = *init_time;
+      for (auto& f : files_)
+        if (f.rollover && !f.file && syncFileWindows(f) != 0) {
+          std::fprintf(stderr, "TIM diag: file window sync: %s\n",
+                       error_.c_str());
+          return kFieldNotFound;
+        }
+    }
+  }
   const std::string key = fieldKey(module, field);
   auto it = field_ids_.find(key);
   if (it != field_ids_.end()) return it->second;
@@ -408,7 +436,7 @@ void DiagManager::addAttribute(int field_id, const std::string& name,
   if (field_id < 0 || field_id >= (int)fields_.size()) return;
   for (auto& a : fields_[(size_t)field_id].attrs) {
     if (a.name == name && a.kind == Attr::Kind::Text) {
-      a.text += " " + text;  // FMS prepend_attribute: repeats append
+      a.text = text + " " + a.text;  // FMS prepend_attribute: new part FIRST
       return;
     }
   }
@@ -515,7 +543,9 @@ int DiagManager::defineFileContents(OutFile& f) {
   file.putVarAtt(tname, "axis", "T");
   file.putVarAtt(tname, "calendar", calendarName(cal_));
   if (f.time_ops) {
-    file.putVarAtt(tname, "bounds", "time_bounds");
+    // FMS derives the bounds variable name from the time axis name.
+    const std::string bname = tname + "_bounds";
+    file.putVarAtt(tname, "bounds", bname);
     file.defineAxis("nbnd", IO::File::AxisKind::Fixed, Stagger::Center, 2, "",
                     "bounds", "", std::nullopt);
     file.defineVar("average_T1", {tname}, f.time_units_str,
@@ -526,9 +556,9 @@ int DiagManager::defineFileContents(OutFile& f) {
     file.defineVar("average_DT", {tname},
                    unitName(f.spec->time_axis_units),
                    "Length of average period", "", false, "", kCmorMissing);
-    file.defineVar("time_bounds", {"nbnd", tname}, f.time_units_str,
-                   "time interval endpoints", "", false, "");
-    file.putVarAtt("time_bounds", "calendar", calendarName(cal_));
+    file.defineVar(bname, {"nbnd", tname}, f.time_units_str,
+                   tname + " interval endpoints", "", false, "", kCmorMissing);
+    file.putVarAtt(bname, "calendar", calendarName(cal_));
   }
 
   // Data variables.
@@ -676,7 +706,7 @@ int DiagManager::writeWindow(Stream& s, bool at_end, const TimeStamp& end_time,
       file.writePlain("average_T1", &t1, 1, tstamp);
       file.writePlain("average_T2", &t2, 1, tstamp);
       file.writePlain("average_DT", &dt, 1, tstamp);
-      file.writePlain("time_bounds", bnds, 2, tstamp);
+      file.writePlain(f.spec->time_axis_name + "_bounds", bnds, 2, tstamp);
     }
   }
 

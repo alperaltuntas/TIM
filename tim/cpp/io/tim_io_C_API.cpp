@@ -9,6 +9,7 @@
 #include "../core/tim_config.hpp"
 #include "../core/tim_domain.hpp"
 #include "tim_backend.hpp"
+#include "tim_io_C_API_internal.hpp"
 #include "tim_io_context.hpp"
 
 #include <mpi.h>
@@ -57,6 +58,12 @@ bool debugOn() {
 Stagger stag(int code) { return static_cast<Stagger>(code); }
 
 }  // namespace
+
+namespace TIM {
+namespace IO {
+IoContext& currentIoContext() { return ctx(); }
+}  // namespace IO
+}  // namespace TIM
 
 extern "C" {
 
