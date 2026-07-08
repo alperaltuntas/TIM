@@ -228,6 +228,21 @@ re-passed bit-identical. Lessons:
 - FMS oddity worth reporting upstream: read_field_3d_region's error header
   says "read_field_2d_region".
 
+## Q6 — tx1_12 first attempt: TIM reads what in-tree FMS cannot
+
+- The 2048-rank A/B failed as designed but taught two things:
+  1. **The in-tree FMS CANNOT read the tx1_12 CESM restart in a
+     symmetric-memory build**: `NetCDF: Start+count exceeds dimension bound`
+     reading u (file has non-symmetric staggered axes, lonq = nig; symmetric
+     FMS asks for nig+1). **TIM's file-stagger sniffing handles the same file**
+     — the TIM leg sailed past every restart read and died much later on a
+     standalone-config gap (SURFBAND_SOURCE=COUPLER invalid for the solo
+     driver; fixed with #override USE_WAVES=False in the standalone example).
+  2. FMS-vs-TIM read timing on this restart flavor is therefore impossible
+     directly; job 6671898 bootstraps it: TIM reads the CESM restart and
+     writes a fresh symmetric-convention restart, then FMS and TIM legs A/B
+     on that file.
+
 ## Q4 — FMS diag semantics (windows, average_T1/T2, accumulation order)
 
 - TBD.
