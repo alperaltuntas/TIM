@@ -363,6 +363,50 @@ re-passed bit-identical. Lessons:
   ranks), Q5 through-MOM6 (MOM_diag_save_state/restore_state exported and
   ready to hook next to save_restart), diag-side Q6 numbers.
 
+## Rollover gate + Q5 through-MOM6 gate — PASSED
+
+- **File-rotation A/B** (double_gyre, new_file_freq 5 days, 10-day run,
+  TIM_DIAG vs FMS): both runs rotate at day 5 producing identical filenames
+  (.0001-003/.0001-008 for the filename_time=middle averaged files,
+  .0001-006/.0001-011 for snapshots); all six files DATA-IDENTICAL.
+- **Q5 through-MOM6** (solo driver hook committed: save RESTART/
+  TIM.diag.res.nc beside save_MOM_restart, restore INPUT/TIM.diag.res.nc
+  after finish_MOM_initialization): 10-day continuous vs 4+6-day restart —
+  the restart lands mid-window of the 5-day means — all history files from
+  the restarted segment BIT-IDENTICAL to the continuous run, including the
+  restart-spanning mean. The capability FMS lacks, demonstrated end-to-end.
+  (Restart legs need RESTART_CHECKSUMS_REQUIRED=False — the pre-existing
+  TIM::checksum bug, unrelated.)
+
+## cesm_t232 diag A/B (intel, 128 ranks, masked tripolar) — scale + Q6
+
+- TIM diag runs the production-style config cleanly (57 fields, monthly
+  %4yr-%2mo files, AUTO_MASKTABLE 13x11->128): ocean.stats IDENTICAL,
+  h.sfc record contents produced, statics written.
+- **Q6 (diag-side)**: total wallclock 111 s (FMS diag) vs 92 s (TIM diag)
+  for the same segment — TIM's diag+I/O path is not slower at scale; part
+  of the gap is TIM not writing fill-only files (below).
+- Known/expected divergences surfaced by this segment (the saved restart
+  sits 0.25 day into a window, atypical of production):
+  1. Window anchors: FMS records stamped from init-anchored windows
+     (average_T1=0.25) vs TIM base-anchored (T1=0) — the documented design
+     divergence; only visible when a run restarts mid-window WITHOUT the
+     TIM diag state file. With state (Q5) TIM is self-consistent; CESM
+     segments start on boundaries where the two coincide.
+  2. Never-written fields: at diag end FMS creates files whose only content
+     is a FILL_VALUE record (h.native/h.z here — windows never closed);
+     TIM does not create files that hold no data. Accepted for now; revisit
+     if downstream tooling (st_archive) expects the files to exist.
+  3. **Masked-layout staggered writes have holes**: writePartition assigns
+     interior shared staggered edges to the eastern/northern neighbor —
+     when that tile is ELIMINATED by the mask table, nobody writes the
+     shared line (statics geolat_c/u/v, wet_c, Coriolis show 1e20 where FMS
+     halo-gathers values). Same root cause as the accepted masked-tile
+     restart diff, now precisely diagnosed: the production-pass Decomp2D
+     needs mask-aware edge ownership (extend writePartition to claim edges
+     bordering eliminated tiles). Risk-register item.
+- t112 chain job 6671898 still queued (premium, 16 nodes).
+
 ## Q6 — Performance at production scale (cesm_t232, 768 ranks)
 
 - **Read performance, 128 ranks (single node, interactive), cesm_t232 tx2_3v2
