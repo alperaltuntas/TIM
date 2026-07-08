@@ -13,10 +13,11 @@ DecompCache::~DecompCache() {
 }
 
 DecompId DecompCache::get(int domainKey, const Decomp2D& d, Stagger stagger,
-                          int nz, int nz2, Family fam, int comp) {
+                          int nz, int nz2, Family fam, int comp, bool single) {
   const long long key = ((long long)domainKey << 48) |
                         ((long long)(int)stagger << 44) |
                         ((long long)(int)fam << 40) | ((long long)comp << 36) |
+                        ((long long)(single ? 1 : 0) << 35) |
                         ((long long)nz2 << 20) | nz;
   auto it = cache_.find(key);
   if (it != cache_.end()) return it->second;
@@ -29,13 +30,13 @@ DecompId DecompCache::get(int domainKey, const Decomp2D& d, Stagger stagger,
     const int n = d.readComponents(stagger, comps);
     w = (comp < n) ? comps[comp] : Window{};  // empty window if absent
   }
-  DecompId id = build(d, stagger, w, nz, nz2);
+  DecompId id = build(d, stagger, w, nz, nz2, single);
   cache_[key] = id;
   return id;
 }
 
 DecompId DecompCache::build(const Decomp2D& d, Stagger stagger, const Window& w,
-                            int nz, int nz2) {
+                            int nz, int nz2, bool single) {
   const int gnx = d.globalNx(stagger), gny = d.globalNy(stagger);
 
   std::vector<long long> dof;
@@ -60,7 +61,7 @@ DecompId DecompCache::build(const Decomp2D& d, Stagger stagger, const Window& w,
   } else {
     ndims = 2; gdims[0] = gny; gdims[1] = gnx;
   }
-  return Backend::initDecomp(sys_, ndims, gdims, dof);
+  return Backend::initDecomp(sys_, ndims, gdims, dof, single);
 }
 
 }  // namespace IO

@@ -84,11 +84,24 @@ class File {
                  std::optional<int> sense);
   // dims: axis names in Fortran order (x first); staggering, z-extents and
   // record-ness of the variable are derived from the named axes.
+  // fill_missing: sets the variable's fill value (stored as _FillValue by the
+  // classic formats) AND writes a matching missing_value attribute, both typed
+  // by single_precision — the FMS diag-file convention.
   int defineVar(const std::string& name, const std::vector<std::string>& dims,
                 const std::string& units, const std::string& longname,
                 const std::string& standard_name, bool single_precision,
-                const std::string& checksum_hex);
+                const std::string& checksum_hex,
+                std::optional<double> fill_missing = std::nullopt);
   int putGlobalAtt(const std::string& name, const std::string& value);
+  // Extra attributes on an already-defined var/axis (define phase only).
+  int putVarAtt(const std::string& varname, const std::string& att,
+                const std::string& text);
+  int putVarAtt(const std::string& varname, const std::string& att,
+                const double* values, int n, bool as_float = false);
+  int putVarAttInts(const std::string& varname, const std::string& att,
+                    const int* values, int n);
+  // Global text attribute of a read file; nullopt when absent.
+  std::optional<std::string> globalAttText(const std::string& name) const;
 
   // ---- writing (data phase) ----
   int writeAxis(const std::string& name, const double* global_values, int n);
@@ -122,7 +135,14 @@ class File {
   std::string unlim_name_;
 
   struct AxisInfo { AxisKind kind; Stagger position; int len; };
-  struct VarInfo { Stagger stagger; int nz, nz2; bool has_time; };
+  struct VarInfo {
+    Stagger stagger = Stagger::Center;
+    int nz = 1, nz2 = 1;
+    bool has_time = false;
+    int ndims = 0;  // as defined (Fortran count, incl. the time axis)
+    bool single = false;                        // float variable
+    double fill = 9.9692099683868690e+36;       // the var's own fill value
+  };
   std::map<std::string, AxisInfo> axes_;
   std::map<std::string, VarInfo> vars_;
 };

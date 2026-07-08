@@ -28,13 +28,13 @@ SysId Backend::init(MPI_Comm comm, int niotasks, int stride) {
 void Backend::finalize(SysId sys) { PIOc_finalize(sys); }
 
 DecompId Backend::initDecomp(SysId sys, int ndims, const int* gdims,
-                             const std::vector<long long>& dof) {
+                             const std::vector<long long>& dof, bool single) {
   static PIO_Offset dummy = 0;  // PIO rejects NULL maps even when empty
   std::vector<PIO_Offset> map(dof.begin(), dof.end());
   int ioid = -1, rearr = PIO_REARR_BOX;
-  int rc = PIOc_InitDecomp(sys, PIO_DOUBLE, ndims, gdims, (int)map.size(),
-                           map.empty() ? &dummy : map.data(), &ioid, &rearr,
-                           nullptr, nullptr);
+  int rc = PIOc_InitDecomp(sys, single ? PIO_REAL : PIO_DOUBLE, ndims, gdims,
+                           (int)map.size(), map.empty() ? &dummy : map.data(),
+                           &ioid, &rearr, nullptr, nullptr);
   if (rc != PIO_NOERR) {
     std::fprintf(stderr, "TIM backend: InitDecomp rc=%d\n", rc);
     MPI_Abort(MPI_COMM_WORLD, 1);
@@ -91,6 +91,26 @@ int Backend::putAttText(FileId f, VarId v, const std::string& name,
 int Backend::putAttInt(FileId f, VarId v, const std::string& name, int value) {
   return PIOc_put_att_int(f, v, name.c_str(), PIO_INT, 1, &value);
 }
+int Backend::putAttInts(FileId f, VarId v, const std::string& name,
+                        const int* values, int n) {
+  return PIOc_put_att_int(f, v, name.c_str(), PIO_INT, n, values);
+}
+int Backend::putAttDouble(FileId f, VarId v, const std::string& name,
+                          const double* values, int n, bool as_float) {
+  if (as_float) {
+    std::vector<float> fv(values, values + n);
+    return PIOc_put_att_float(f, v, name.c_str(), PIO_FLOAT, n, fv.data());
+  }
+  return PIOc_put_att_double(f, v, name.c_str(), PIO_DOUBLE, n, values);
+}
+int Backend::defVarFillValue(FileId f, VarId v, bool single_precision,
+                             double value) {
+  if (single_precision) {
+    float fv = (float)value;
+    return PIOc_def_var_fill(f, v, 0 /*fill mode on*/, &fv);
+  }
+  return PIOc_def_var_fill(f, v, 0 /*fill mode on*/, &value);
+}
 int Backend::defVarFill(FileId f, VarId v, bool single_precision) {
   static double dfill = 9.9692099683868690e+36;  // NC_FILL_DOUBLE
   static float ffill = 9.9692099683868690e+36f;  // NC_FILL_FLOAT
@@ -143,11 +163,17 @@ int Backend::readDArray(FileId f, VarId v, DecompId d, long long n, double* buf)
   return PIOc_read_darray(f, v, d, (PIO_Offset)n, n ? buf : &dummy);
 }
 int Backend::writeDArray(FileId f, VarId v, DecompId d, long long n,
-                         const double* buf) {
+                         const double* buf, double fill, bool single) {
+  // Cells covered by no rank (masked/eliminated tiles) get the variable's own
+  // fill value — PIO rejects a fill argument that differs from the var's.
+  if (single) {
+    static float fdummy = 0.0f;
+    std::vector<float> fbuf(buf, buf + n);
+    float ffill = (float)fill;
+    return PIOc_write_darray(f, v, d, (PIO_Offset)n,
+                             n ? (void*)fbuf.data() : (void*)&fdummy, &ffill);
+  }
   static double dummy = 0.0;
-  // Cells covered by no rank (masked/eliminated tiles) get the netCDF default
-  // double fill, matching what FMS-written files contain.
-  static double fill = 9.9692099683868690e+36;  // NC_FILL_DOUBLE
   return PIOc_write_darray(f, v, d, (PIO_Offset)n,
                            const_cast<double*>(n ? buf : &dummy), &fill);
 }

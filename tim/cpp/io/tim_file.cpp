@@ -321,8 +321,12 @@ int File::defineAxis(const std::string& name, AxisKind kind, Stagger position,
 int File::defineVar(const std::string& name, const std::vector<std::string>& dims,
                     const std::string& units, const std::string& longname,
                     const std::string& standard_name, bool single_precision,
-                    const std::string& checksum_hex) {
-  VarInfo vi{Stagger::Center, 1, 1, false};
+                    const std::string& checksum_hex,
+                    std::optional<double> fill_missing) {
+  VarInfo vi;
+  vi.ndims = (int)dims.size();
+  vi.single = single_precision;
+  if (fill_missing) vi.fill = *fill_missing;
   std::vector<int> dimids;
   bool sx = false, sy = false;
   std::vector<int> zlens;
@@ -350,7 +354,13 @@ int File::defineVar(const std::string& name, const std::vector<std::string>& dim
   VarId v;
   int rc = Backend::defVar(id_, name, single_precision, cdims, &v);
   if (rc != 0) return rc;
-  Backend::defVarFill(id_, v, single_precision);
+  if (fill_missing) {
+    Backend::defVarFillValue(id_, v, single_precision, *fill_missing);
+    Backend::putAttDouble(id_, v, "missing_value", &*fill_missing, 1,
+                          single_precision);
+  } else {
+    Backend::defVarFill(id_, v, single_precision);
+  }
   if (!longname.empty()) Backend::putAttText(id_, v, "long_name", longname);
   if (!units.empty()) Backend::putAttText(id_, v, "units", units);
   if (!standard_name.empty())
@@ -363,6 +373,34 @@ int File::defineVar(const std::string& name, const std::vector<std::string>& dim
 
 int File::putGlobalAtt(const std::string& name, const std::string& value) {
   return Backend::putAttText(id_, Backend::globalAtts(), name, value);
+}
+
+int File::putVarAtt(const std::string& varname, const std::string& att,
+                    const std::string& text) {
+  VarId v;
+  if (Backend::findVar(id_, varname, &v) != 0) return -1;
+  return Backend::putAttText(id_, v, att, text);
+}
+
+int File::putVarAtt(const std::string& varname, const std::string& att,
+                    const double* values, int n, bool as_float) {
+  VarId v;
+  if (Backend::findVar(id_, varname, &v) != 0) return -1;
+  return Backend::putAttDouble(id_, v, att, values, n, as_float);
+}
+
+int File::putVarAttInts(const std::string& varname, const std::string& att,
+                        const int* values, int n) {
+  VarId v;
+  if (Backend::findVar(id_, varname, &v) != 0) return -1;
+  return Backend::putAttInts(id_, v, att, values, n);
+}
+
+std::optional<std::string> File::globalAttText(const std::string& name) const {
+  std::string out;
+  if (Backend::getAttText(id_, Backend::globalAtts(), name, &out) != 0)
+    return std::nullopt;
+  return out;
 }
 
 int File::writeAxis(const std::string& name, const double* values, int n) {
@@ -421,9 +459,9 @@ int File::writeDecomposed(const std::string& varname, const double* buf,
 
   DecompId ioid = sys_->decomps().get(
       domain_key_, domain_, vi.stagger, vi.nz, vi.nz2,
-      DecompCache::Family::WritePartition);
+      DecompCache::Family::WritePartition, 0, vi.single);
   int rc = Backend::writeDArray(id_, v, ioid, (long long)part.size(),
-                                part.data());
+                                part.data(), vi.fill, vi.single);
   if (rc != 0)
     std::fprintf(stderr, "TIM File: write %s rc=%d\n", varname.c_str(), rc);
   return rc;
@@ -440,7 +478,13 @@ int File::writePlain(const std::string& varname, const double* data, int n,
   long long start[2] = {0, 0}, count[2] = {1, 1};
   int nd = 1;
   if (has_t && frame >= 0) {
-    start[0] = frame; count[1] = n; nd = 2;
+    // Rank-1 record vars (e.g. scalar time series, average_T1) have ONLY the
+    // record dim; passing a second dim would exceed the variable's rank.
+    if (it->second.ndims <= 1) {
+      start[0] = frame; count[0] = 1; nd = 1;
+    } else {
+      start[0] = frame; count[1] = n; nd = 2;
+    }
   } else {
     count[0] = n;
   }

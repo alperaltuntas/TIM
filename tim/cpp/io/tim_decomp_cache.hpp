@@ -27,13 +27,14 @@ class DecompCache {
   // The decomposition for one read component / the write partition of a
   // variable at `stagger` with trailing extents nz (total) and nz2 (4th dim).
   // `domainKey` identifies the Decomp2D (registry handle); the Decomp2D
-  // itself provides the geometry.
+  // itself provides the geometry. single: float basetype (float vars need
+  // type-matched decomps).
   DecompId get(int domainKey, const Decomp2D& d, Stagger stagger, int nz,
-               int nz2, Family fam, int comp = 0);
+               int nz2, Family fam, int comp = 0, bool single = false);
 
  private:
   DecompId build(const Decomp2D& d, Stagger stagger, const Window& w, int nz,
-                 int nz2);
+                 int nz2, bool single);
 
   SysId sys_;
   std::map<long long, DecompId> cache_;

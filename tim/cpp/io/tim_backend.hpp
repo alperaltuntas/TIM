@@ -30,8 +30,11 @@ struct Backend {
   static void finalize(SysId);
 
   // --- decompositions (dof: 1-based flat global offsets; empty ok) ---
+  // single: float basetype — the backend requires the decomposition's type
+  // to match the variable's, so single-precision vars get their own decomps.
   static DecompId initDecomp(SysId, int ndims, const int* gdims,
-                             const std::vector<long long>& dof);
+                             const std::vector<long long>& dof,
+                             bool single = false);
   static void freeDecomp(SysId, DecompId);
 
   // --- files ---
@@ -55,6 +58,14 @@ struct Backend {
                         const std::string& value);
   static int putAttInt(FileId, VarId varid_or_global, const std::string& name,
                        int value);
+  static int putAttInts(FileId, VarId varid_or_global, const std::string& name,
+                        const int* values, int n);
+  // as_float stores the attribute as NC_FLOAT (matching single-precision vars).
+  static int putAttDouble(FileId, VarId varid_or_global, const std::string& name,
+                          const double* values, int n, bool as_float);
+  // defVarFill with an explicit fill value (typed by single_precision); the
+  // classic formats store it as the _FillValue attribute. Define mode only.
+  static int defVarFillValue(FileId, VarId, bool single_precision, double value);
   static VarId globalAtts();
 
   // --- inquiry ---
@@ -72,7 +83,10 @@ struct Backend {
   // --- data ---
   static int setFrame(FileId, VarId, int frame0);
   static int readDArray(FileId, VarId, DecompId, long long n, double* buf);
-  static int writeDArray(FileId, VarId, DecompId, long long n, const double* buf);
+  // fill: the VARIABLE's fill value (must match its _FillValue or the backend
+  // rejects the write); single converts the buffer to float for float vars.
+  static int writeDArray(FileId, VarId, DecompId, long long n,
+                         const double* buf, double fill, bool single);
   // Contiguous hyperslab get/put (collective; result valid on all ranks).
   static int getVaraDouble(FileId, VarId, const long long start[],
                            const long long count[], int ndims, double* buf);
