@@ -6,15 +6,14 @@ namespace TIM {
 namespace IO {
 
 int IoSystem::chooseIoTasks(int nprocs, const Options& opts) {
-  // Sweep evidence (cesm_t232 restart reads, 768 ranks): 32 iotasks 1.32 s,
-  // 96 3.72 s, 192 (=nprocs/4) 4.68 s, 8 5.48 s — too many iotasks is far
-  // worse than too few. Cap the rank-based default; production should scale
-  // this with data volume instead.
+  // Sweep evidence (cesm_t232 restart reads): 32 iotasks was the sweet spot at
+  // BOTH 128 and 768 ranks (768: 32->1.32s best, 96->3.72s, 192(=nprocs/4)->
+  // 4.68s, 8->5.48s). The optimum is ~constant, not proportional to nprocs —
+  // I/O-aggregation bandwidth saturates — so the default is a fixed target,
+  // capped at nprocs for small jobs. Override per run with tim.io.pio_ntasks
+  // / TIM_PIO_NTASKS; very large runs should retune with a widened sweep.
   int niotasks = opts.niotasks;
-  if (niotasks <= 0) {
-    niotasks = nprocs >= 4 ? nprocs / 4 : 1;
-    if (niotasks > 64) niotasks = 64;
-  }
+  if (niotasks <= 0) niotasks = 32;
   if (niotasks < 1) niotasks = 1;
   if (niotasks > nprocs) niotasks = nprocs;
   return niotasks;
