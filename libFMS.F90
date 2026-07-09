@@ -71,9 +71,6 @@ module fms
                            astronomy_end, universal_time, orbital_time
 
   !> axis_utils
-  use axis_utils2_mod, only: get_axis_cart, get_axis_modulo, lon_in_range, &
-                             frac_index, nearest_index, &
-                             get_axis_modulo_times, axis_edges
 
   !>block_control
   use block_control_mod, only: block_control_type, define_blocks, &
@@ -104,21 +101,9 @@ module fms
                                aof_set_coupler_flux
 
   !> data_override
-  use data_override_mod, only: data_override_init, data_override, &
-                               data_override_unset_domains
 
   !> diag_manager
   !! includes imports from submodules made public
-  use diag_manager_mod, only: diag_manager_init, send_data, send_tile_averaged_data, &
-                           diag_manager_end, register_diag_field, register_static_field, &
-                           diag_axis_init, get_base_time, get_base_date, need_data, &
-                           DIAG_ALL, DIAG_OCEAN, DIAG_OTHER, get_date_dif, DIAG_SECONDS,&
-                           DIAG_MINUTES, DIAG_HOURS, DIAG_DAYS, DIAG_MONTHS, DIAG_YEARS, &
-                           get_diag_global_att, diag_field_add_attribute, &
-                           diag_field_add_cell_measures, get_diag_field_id, &
-                           diag_manager_set_time_end, diag_send_complete, &
-                           DIAG_FIELD_NOT_FOUND, &
-                           CMOR_MISSING_VALUE, null_axis_id
 
   !> field manager
   use field_manager_mod, only: field_manager_init, field_manager_end, find_field_index, &
@@ -149,30 +134,6 @@ module fms
                          fm_util_default_caller
 
   !> fms2_io
-  use fms2_io_mod, only: unlimited, FmsNetcdfFile_t, FmsNetcdfDomainFile_t, &
-                         open_file, &
-                         close_file, register_axis, register_field, register_restart_field, &
-                         write_data, read_data, write_restart, &
-                         read_restart, global_att_exists, &
-                         variable_att_exists, register_global_attribute, &
-                         register_variable_attribute, get_global_attribute, &
-                         get_variable_attribute, get_num_dimensions, &
-                         get_dimension_names, dimension_exists, is_dimension_unlimited, &
-                         get_dimension_size, get_num_variables, get_variable_names, &
-                         variable_exists, get_variable_num_dimensions, &
-                         get_variable_dimension_names, get_variable_size, &
-                         get_compute_domain_dimension_indices, &
-                         get_global_io_domain_indices, Valid_t, get_valid, is_valid, &
-                         get_unlimited_dimension_name, get_variable_unlimited_dimension_index, &
-                         file_exists, compressed_start_and_count, get_variable_sense, &
-                         get_variable_missing, get_variable_units, get_time_calendar, &
-                         open_check, is_registered_to_restart, check_if_open, &
-                         set_fileobj_time_name, is_dimension_registered, &
-                         fms2_io_init, get_mosaic_tile_grid, &
-                         write_restart_bc, read_restart_bc, get_filename_appendix, & !> 2021.02-a1
-                         set_filename_appendix, get_instance_filename, &
-                         nullify_filename_appendix, ascii_read, get_mosaic_tile_file, &
-                         parse_mask_table
   ! used via fms2_io
   ! fms_io_utils_mod, fms_netcdf_domain_io_mod, netcdf_io_mod,
 
@@ -195,15 +156,6 @@ module fms
   use memutils_mod, only: memutils_init, print_memuse_stats
 
   !> mosaic
-  use mosaic2_mod, only: get_mosaic_ntiles, get_mosaic_ncontacts, &
-                      get_mosaic_grid_sizes, get_mosaic_contact, &
-                      get_mosaic_xgrid_size, get_mosaic_xgrid, &
-                      calc_mosaic_grid_area, calc_mosaic_grid_great_circle_area, &
-                      is_inside_polygon, &
-                      mosaic2_get_mosaic_tile_grid => get_mosaic_tile_grid !overloaded in fms2_io
-  use grid2_mod, only: get_grid_ntiles, get_grid_size, &
-                      get_grid_cell_vertices, get_grid_cell_Area, &
-                      get_great_circle_algorithm, grid_init, grid_end
 
   !> mpp
   use mpp_mod, only: stdin, stdout, stderr, &
@@ -298,15 +250,6 @@ module fms
                                   string_copy
 
   !> time_interp
-  use time_interp_mod, only: time_interp_init, time_interp, fraction_of_year, &
-                             NONE, YEAR, MONTH, DAY
-  use time_interp_external2_mod, only: init_external_field, time_interp_external, &
-                             time_interp_external_init, time_interp_external_exit, &
-                             get_external_field_size, get_time_axis, &
-                             get_external_field_missing, set_override_region, &
-                             reset_src_data_region, get_external_fileobj, &
-                             NO_REGION, INSIDE_REGION, OUTSIDE_REGION, &
-                             SUCCESS, ERR_FIELD_NOT_FOUND
 
   !> time_manager
   use time_manager_mod, only: time_type, operator(+), operator(-), operator(*), &

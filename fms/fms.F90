@@ -138,9 +138,7 @@ use       mpp_io_mod, only:  mpp_io_init, mpp_open, mpp_close,         &
 use fms_io_mod, only : fms_io_init, &
                        read_data, &
                        get_mosaic_tile_file, get_global_att_value, file_exist, field_exist
-use fms2_io_mod, only: fms2_io_init
 use memutils_mod, only: print_memuse_stats, memutils_init
-use grid2_mod, only: grid_init, grid_end
 use fms_string_utils_mod, only: fms_c2f_string, fms_cstring2cpointer, string
 
 use, intrinsic :: iso_c_binding
@@ -322,7 +320,6 @@ subroutine fms_init (localcomm, alt_input_nml_path)
       call write_version_number("FMS_IO_MOD", fms_io_version)
       fms_io_initialized = .true.
     endif
-    call fms2_io_init()
     logunitnum = stdlog()
 !---- read namelist input ----
 
@@ -398,7 +395,6 @@ subroutine fms_init (localcomm, alt_input_nml_path)
 
 !--- output version information constants to the logfile
     call write_version_number("CONSTANTS_MOD", constants_version)
-    call grid_init
 
 end subroutine fms_init
 
@@ -412,7 +408,6 @@ end subroutine fms_init
 subroutine fms_end ( )
 
     if (.not.module_is_initialized) return  ! return silently
-    call grid_end
     call mpp_io_exit
     call mpp_domains_exit
     call mpp_exit

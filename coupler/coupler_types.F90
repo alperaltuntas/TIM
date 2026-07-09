@@ -25,16 +25,8 @@
 !> @{
 module coupler_types_mod
   use fms_mod,           only: write_version_number, lowercase
-  use fms2_io_mod,       only: FmsNetcdfDomainFile_t, open_file
-  use fms2_io_mod,       only: register_axis, unlimited, variable_exists, check_if_open
-  use fms2_io_mod,       only: register_field, get_num_dimensions, variable_att_exists
-  use fms2_io_mod,       only: get_variable_attribute, get_dimension_size, get_dimension_names
-  use fms2_io_mod,       only: register_variable_attribute, get_variable_dimension_names
-  use fms2_io_mod,       only: get_variable_num_dimensions
   use fms_io_mod,        only: restart_file_type
   use time_manager_mod,  only: time_type
-  use diag_manager_mod,  only: register_diag_field, send_data
-  use data_override_mod, only: data_override
   use mpp_domains_mod,   only: domain2D, mpp_redistribute
   use mpp_mod,           only: mpp_error, FATAL, mpp_chksum
 
@@ -95,7 +87,6 @@ module coupler_types_mod
     character(len=128)                :: ocean_restart_file = ' ' !< ocean_restart_file
     type(restart_file_type), pointer  :: rest_type => NULL() !< A pointer to the restart_file_type
                                                              !! that is used for this field.
-    type(FmsNetcdfDomainFile_t), pointer :: fms2_io_rest_type => NULL() !< A pointer to the restart_file_type
                                                                         !! That is used for this field
     logical                           :: use_atm_pressure !< use_atm_pressure
     logical                           :: use_10m_wind_speed !< use_10m_wind_speed
@@ -149,7 +140,6 @@ module coupler_types_mod
     character(len=128)                :: ocean_restart_file = ' ' !< ocean_restart_file
     type(restart_file_type), pointer  :: rest_type => NULL() !< A pointer to the restart_file_type
                                                              !! that is used for this field.
-    type(FmsNetcdfDomainFile_t), pointer :: fms2_io_rest_type => NULL() !< A pointer to the restart_file_type
                                                                         !! That is used for this field
     logical                           :: use_atm_pressure !< use_atm_pressure
     logical                           :: use_10m_wind_speed !< use_10m_wind_speed
@@ -3038,7 +3028,6 @@ contains
     integer, dimension(:),    intent(in)    :: axes !< array of axes identifiers for diagnostic variable registration
     type(time_type),          intent(in)    :: time !< model time variable for registering diagnostic field
 
-    integer :: m, n
 
     if (diag_name == ' ') return
 
@@ -3047,13 +3036,12 @@ contains
           & '(coupler_types_set_diags_3d): axes has less than 2 elements')
     endif
 
-    do n = 1, var%num_bcs
-      do m = 1, var%bc(n)%num_fields
-        var%bc(n)%field(m)%id_diag = register_diag_field(diag_name,&
-            & var%bc(n)%field(m)%name, axes(1:2), Time,&
-            & var%bc(n)%field(m)%long_name, var%bc(n)%field(m)%units)
-      enddo
-    enddo
+    ! The FMS diag_manager has been removed from this build (TIM infrastructure);
+    ! coupler diagnostics cannot be registered.  This path is dormant in CESM
+    ! (num_bcs=0 without gas_fields_ocn), so only fail if it is actually used.
+    if (var%num_bcs > 0) call mpp_error(FATAL, '==>Error from coupler_types_mod' //&
+        & '(CT_set_diags_2d): coupler diagnostics are not available in this build' //&
+        & ' (FMS diag_manager removed with the TIM infrastructure)')
   end subroutine CT_set_diags_2d
 
   !> @brief Register the diagnostics of a coupler_3d_bc_type.
@@ -3066,7 +3054,6 @@ contains
     integer, dimension(:),    intent(in)    :: axes !< array of axes identifiers for diagnostic variable registration
     type(time_type),          intent(in)    :: time !< model time variable for registering diagnostic field
 
-    integer :: m, n
 
     if (diag_name == ' ') return
 
@@ -3075,13 +3062,10 @@ contains
           & '(coupler_types_set_diags_3d): axes has less than 3 elements')
     endif
 
-    do n = 1, var%num_bcs
-      do m = 1, var%bc(n)%num_fields
-        var%bc(n)%field(m)%id_diag = register_diag_field(diag_name,&
-            & var%bc(n)%field(m)%name, axes(1:3), Time,&
-            & var%bc(n)%field(m)%long_name, var%bc(n)%field(m)%units )
-      enddo
-    enddo
+    ! See CT_set_diags_2d: coupler diagnostics are unavailable without diag_manager.
+    if (var%num_bcs > 0) call mpp_error(FATAL, '==>Error from coupler_types_mod' //&
+        & '(CT_set_diags_3d): coupler diagnostics are not available in this build' //&
+        & ' (FMS diag_manager removed with the TIM infrastructure)')
   end subroutine CT_set_diags_3d
 
 
@@ -3091,12 +3075,14 @@ contains
     type(time_type),          intent(in) :: time !< The current model time
 
     integer :: m, n
-    logical :: used
 
     do n = 1, var%num_bcs
       do m = 1, var%bc(n)%num_fields
         if (var%bc(n)%field(m)%id_diag > 0) then
-          used = send_data(var%bc(n)%field(m)%id_diag, var%bc(n)%field(m)%values, Time)
+          ! Unreachable: with diag_manager removed, CT_set_diags fails before any
+          ! field can be registered, so id_diag is never positive.
+          call mpp_error(FATAL, '==>Error from coupler_types_mod (CT_send_data): ' //&
+              & 'coupler diagnostics are not available in this build')
         endif
       enddo
     enddo
@@ -3108,116 +3094,19 @@ contains
     type(time_type),          intent(in) :: time !< The current model time
 
     integer :: m, n
-    logical :: used
 
     do n = 1, var%num_bcs
       do m = 1, var%bc(n)%num_fields
         if (var%bc(n)%field(m)%id_diag > 0) then
-          used = send_data(var%bc(n)%field(m)%id_diag, var%bc(n)%field(m)%values, Time)
+          ! Unreachable: with diag_manager removed, CT_set_diags fails before any
+          ! field can be registered, so id_diag is never positive.
+          call mpp_error(FATAL, '==>Error from coupler_types_mod (CT_send_data): ' //&
+              & 'coupler diagnostics are not available in this build')
         endif
       enddo
     enddo
   end subroutine CT_send_data_3d
 
-  !< If reading a restart, register the dimensions that are in the file
-  subroutine register_axis_wrapper_read(fileobj)
-    type(FmsNetcdfDomainFile_t), intent(inout) :: fileobj !< Domain decomposed fileobj
-
-    character(len=20), dimension(:), allocatable :: file_dim_names !< Array of dimension names
-    integer :: i !< No description
-    integer :: dim_size !< Size of the dimension
-    integer :: ndims !< Number of dimensions in the file
-    logical :: is_domain_decomposed !< Flag indication if domain decomposed
-    character(len=1) :: buffer !< string buffer
-
-    ndims = get_num_dimensions(fileobj)
-    allocate(file_dim_names(ndims))
-
-    call get_dimension_names(fileobj, file_dim_names)
-
-    do i = 1, ndims
-       is_domain_decomposed = .false.
-
-       !< Check if the dimension is also a variable
-       if (variable_exists(fileobj, file_dim_names(i))) then
-
-          !< If the variable exists look for the "cartesian_axis" or "axis" variable attribute
-          if (variable_att_exists(fileobj, file_dim_names(i), "axis")) then
-              call get_variable_attribute(fileobj, file_dim_names(i), "axis", buffer)
-
-              !< If the attribute exists and it is "x" or "y" register it as a domain decomposed dimension
-              if (lowercase(buffer) .eq. "x" .or. lowercase(buffer) .eq. "y" ) then
-                  is_domain_decomposed = .true.
-                  call register_axis(fileobj, file_dim_names(i), buffer)
-              endif
-
-          else if (variable_att_exists(fileobj, file_dim_names(i), "cartesian_axis")) then
-              call get_variable_attribute(fileobj, file_dim_names(i), "cartesian_axis", buffer)
-
-              !< If the attribute exists and it "x" or "y" register it as a domain decomposed dimension
-              if (lowercase(buffer) .eq. "x" .or. lowercase(buffer) .eq. "y" ) then
-                  is_domain_decomposed = .true.
-                  call register_axis(fileobj, file_dim_names(i), buffer)
-              endif
-
-          endif !< If variable attribute exists
-       endif !< If variable exists
-
-       if (.not. is_domain_decomposed) then
-          call get_dimension_size(fileobj, file_dim_names(i), dim_size)
-          call register_axis(fileobj, file_dim_names(i), dim_size)
-       endif
-
-    end do
-
-  end subroutine register_axis_wrapper_read
-
-  !< If writting a restart, register the variables with dummy axis names
-  subroutine register_axis_wrapper_write(fileobj, nz)
-    type(FmsNetcdfDomainFile_t), intent(inout) :: fileobj !< Domain decomposed fileobj
-    integer, intent(in), optional :: nz !< length of the z dimension
-
-    character(len=20) :: dim_names(4) !< Array of dimension names
-
-    dim_names(1) = "xaxis_1"
-    dim_names(2) = "yaxis_1"
-
-    call register_axis(fileobj, dim_names(1), "x")
-    call register_axis(fileobj, dim_names(2), "y")
-
-    !< If nz is present register a zaxis
-    if (.not. present(nz)) then
-       dim_names(3) = "Time"
-       call register_axis(fileobj, dim_names(3), unlimited)
-    else
-       dim_names(3) = "zaxis_1"
-       dim_names(4) = "Time"
-
-       call register_axis(fileobj, dim_names(3), nz)
-       call register_axis(fileobj, dim_names(4), unlimited)
-    endif !< if (.not. present(nz))
-
-    !< Add the dimension names as variable so that the combiner can work correctly
-    call register_field(fileobj, dim_names(1), "double", (/dim_names(1)/))
-    call register_variable_attribute(fileobj, dim_names(1), "axis", "X", str_len=1)
-
-    call register_field(fileobj, dim_names(2), "double", (/dim_names(2)/))
-    call register_variable_attribute(fileobj, dim_names(2), "axis", "Y", str_len=1)
-
-  end subroutine register_axis_wrapper_write
-
-  subroutine register_axis_wrapper(fileobj, to_read, nz)
-    type(FmsNetcdfDomainFile_t), intent(inout) :: fileobj !< Domain decomposed fileobj
-    logical, intent(in) :: to_read !< Flag indicating if reading file
-    integer, intent(in), optional :: nz !< length of the z dimension
-
-    if (to_read) then
-        call register_axis_wrapper_read(fileobj)
-    else
-        call register_axis_wrapper_write(fileobj, nz)
-    endif
-
-  end subroutine register_axis_wrapper
 
   !> @brief Potentially override the values in a coupler_2d_bc_type
   subroutine CT_data_override_2d(gridname, var, Time)
@@ -3225,13 +3114,11 @@ contains
     type(coupler_2d_bc_type), intent(inout) :: var  !< BC_type structure to override
     type(time_type),          intent(in)    :: time !< The current model time
 
-    integer :: m, n
 
-    do n = 1, var%num_bcs
-      do m = 1, var%bc(n)%num_fields
-        call data_override(gridname, var%bc(n)%field(m)%name, var%bc(n)%field(m)%values, Time)
-      enddo
-    enddo
+    ! data_override has been removed from this build (TIM infrastructure) and is
+    ! dormant in CESM coupled mode; fail loudly if a BC override is actually requested.
+    if (var%num_bcs > 0) call mpp_error(FATAL, '==>Error from coupler_types_mod' //&
+        & '(CT_data_override_2d): data_override is not available in this build')
   end subroutine CT_data_override_2d
 
   !> @brief Potentially override the values in a coupler_3d_bc_type
@@ -3240,13 +3127,10 @@ contains
     type(coupler_3d_bc_type), intent(inout) :: var  !< BC_type structure to override
     type(time_type),          intent(in)    :: time !< The current model time
 
-    integer :: m, n
 
-    do n = 1, var%num_bcs
-      do m = 1, var%bc(n)%num_fields
-        call data_override(gridname, var%bc(n)%field(m)%name, var%bc(n)%field(m)%values, Time)
-      enddo
-    enddo
+    ! See CT_data_override_2d.
+    if (var%num_bcs > 0) call mpp_error(FATAL, '==>Error from coupler_types_mod' //&
+        & '(CT_data_override_3d): data_override is not available in this build')
   end subroutine CT_data_override_3d
 
 
