@@ -10,6 +10,7 @@
 #include "../core/tim_domain.hpp"
 #include "tim_backend.hpp"
 #include "tim_io_C_API_internal.hpp"
+#include "tim_external_field.hpp"
 #include "tim_io_context.hpp"
 
 #include <mpi.h>
@@ -28,6 +29,9 @@ using TIM::IO::File;
 using TIM::IO::IoContext;
 
 std::unique_ptr<IoContext> g_ctx;  // owned by tim_io_init/tim_io_finalize
+// External forcing fields; they borrow the context's IoSystem, so they are
+// destroyed by tim_io_finalize BEFORE the context.
+std::vector<std::unique_ptr<TIM::IO::ExternalField>> g_extfields;
 
 TIM::IO::IoSystem::Options resolveOptions() {
   // Composition boundary: configuration is resolved HERE (Config = the sole
@@ -80,7 +84,10 @@ int tim_io_cfg_bool(const char* key, const char* env, int def) {
                               (env && env[0]) ? env : nullptr) ? 1 : 0;
 }
 
-void tim_io_finalize() { g_ctx.reset(); }
+void tim_io_finalize() {
+  g_extfields.clear();
+  g_ctx.reset();
+}
 
 int tim_io_register_domain(int nig, int njg, int isc, int iec, int jsc,
                            int jec, int symmetric) {
@@ -232,5 +239,63 @@ int tim_io_closefile(int fh) {
 
 int tim_io_file_num_times(int fh) { return ctx().writeFile(fh).numTimes(); }
 double tim_io_file_time(int fh) { return ctx().writeFile(fh).fileTime(); }
+
+
+int tim_extfield_init(const char* path, const char* field, int domain_handle,
+                      int fms_calendar, char* actual_name, int name_len) {
+  TIM::Calendar cal;
+  if (!TIM::calendarFromFms(fms_calendar, &cal)) {
+    std::fprintf(stderr, "tim_extfield_init: bad calendar %d\n", fms_calendar);
+    return -1;
+  }
+  static const Decomp2D no_domain;
+  const Decomp2D& dom =
+      domain_handle >= 0 ? ctx().domain(domain_handle) : no_domain;
+  auto f = std::make_unique<TIM::IO::ExternalField>(
+      ctx().sys(), path ? path : "", field ? field : "", domain_handle, dom,
+      cal);
+  if (!f->ok()) {
+    std::fprintf(stderr, "tim_extfield_init: %s\n", f->error().c_str());
+    return -1;
+  }
+  if (actual_name && name_len > 0)
+    std::snprintf(actual_name, (size_t)name_len, "%s", f->varName().c_str());
+  g_extfields.push_back(std::move(f));
+  return (int)g_extfields.size() - 1;
+}
+
+void tim_extfield_size(int handle, int siz[4]) {
+  if (handle >= 0 && handle < (int)g_extfields.size())
+    g_extfields[(size_t)handle]->sizes(siz);
+}
+
+double tim_extfield_missing(int handle) {
+  return (handle >= 0 && handle < (int)g_extfields.size())
+             ? g_extfields[(size_t)handle]->missingValue()
+             : 0.0;
+}
+
+long long tim_extfield_npts(int handle) {
+  return (handle >= 0 && handle < (int)g_extfields.size())
+             ? g_extfields[(size_t)handle]->npts()
+             : 0;
+}
+
+void tim_extfield_window(int handle, int* ni, int* nj, int* nz) {
+  *ni = 0; *nj = 0; *nz = 0;
+  if (handle < 0 || handle >= (int)g_extfields.size()) return;
+  g_extfields[(size_t)handle]->window(ni, nj, nz);
+}
+
+int tim_extfield_interp(int handle, int days, int secs, double* buf,
+                        unsigned char* mask, int want_mask) {
+  if (handle < 0 || handle >= (int)g_extfields.size()) return -1;
+  auto& f = *g_extfields[(size_t)handle];
+  const int rc = f.interp(TIM::TimeStamp{days, secs, 0}, buf,
+                          want_mask ? mask : nullptr);
+  if (rc != 0)
+    std::fprintf(stderr, "tim_extfield_interp: %s\n", f.error().c_str());
+  return rc;
+}
 
 }  // extern "C"

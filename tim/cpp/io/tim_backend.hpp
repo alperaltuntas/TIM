@@ -105,6 +105,11 @@ struct Backend {
     static int varNameAt(const std::string& path, int index0, std::string*);
     static int attText(const std::string& path, const std::string& var,
                        const std::string& att, std::string* out);
+    // Numeric attribute (netCDF converts to double); nonzero when absent.
+    static int attDouble(const std::string& path, const std::string& var,
+                         const std::string& att, double* out, int n = 1);
+    // Name of the unlimited dimension's coordinate variable.
+    static int timeName(const std::string& path, std::string* name);
     static int varSizes(const std::string& path, const std::string& var,
                         int sizes[4]);  // Fortran order; returns ndims or <0
     // start/count 1-based Fortran dim order (x,y,z,t)

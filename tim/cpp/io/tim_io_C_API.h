@@ -63,6 +63,22 @@ int tim_io_closefile(int fh);
 int tim_io_file_num_times(int fh);
 double tim_io_file_time(int fh);
 
+/* --- External forcing fields: time-interpolating reader (FMS
+ * time_interp_external replacement). domain_handle < 0 = replicated field;
+ * fms_calendar: FMS time_manager calendar int. actual_name receives the
+ * case-resolved variable name. Returns handle >= 0, or -1 on error. */
+int tim_extfield_init(const char* path, const char* field, int domain_handle,
+                      int fms_calendar, char* actual_name, int name_len);
+void tim_extfield_size(int handle, int siz[4]);
+double tim_extfield_missing(int handle);
+long long tim_extfield_npts(int handle);
+/* Local window shape the interp buffer uses (x-fastest layout). */
+void tim_extfield_window(int handle, int* ni, int* nj, int* nz);
+/* Interpolate to model time (days, secs). buf: npts values. mask: 1 where
+ * valid (pass want_mask=0 with mask=NULL to skip). Returns 0 on success. */
+int tim_extfield_interp(int handle, int days, int secs, double* buf,
+                        unsigned char* mask, int want_mask);
+
 #ifdef __cplusplus
 }
 #endif
