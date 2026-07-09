@@ -25,7 +25,6 @@
 !> @{
 module coupler_types_mod
   use fms_mod,           only: write_version_number, lowercase
-  use fms_io_mod,        only: restart_file_type
   use time_manager_mod,  only: time_type
   use mpp_domains_mod,   only: domain2D, mpp_redistribute
   use mpp_mod,           only: mpp_error, FATAL, mpp_chksum
@@ -85,7 +84,6 @@ module coupler_types_mod
     integer                           :: atm_tr_index = 0 !< atm_tr_index
     character(len=128)                :: ice_restart_file = ' ' !< ice_restart_file
     character(len=128)                :: ocean_restart_file = ' ' !< ocean_restart_file
-    type(restart_file_type), pointer  :: rest_type => NULL() !< A pointer to the restart_file_type
                                                              !! that is used for this field.
                                                                         !! That is used for this field
     logical                           :: use_atm_pressure !< use_atm_pressure
@@ -138,7 +136,6 @@ module coupler_types_mod
     integer                           :: atm_tr_index = 0 !< atm_tr_index
     character(len=128)                :: ice_restart_file = ' ' !< ice_restart_file
     character(len=128)                :: ocean_restart_file = ' ' !< ocean_restart_file
-    type(restart_file_type), pointer  :: rest_type => NULL() !< A pointer to the restart_file_type
                                                              !! that is used for this field.
                                                                         !! That is used for this field
     logical                           :: use_atm_pressure !< use_atm_pressure
