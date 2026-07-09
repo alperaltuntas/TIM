@@ -2,7 +2,8 @@
 !! Pattern: tim/fortran/tim_coms_infra_interface.F90.
 module tim_io_interface
 
-use, intrinsic :: iso_c_binding, only : c_int, c_double, c_char, c_null_char
+use, intrinsic :: iso_c_binding, only : c_int, c_double, c_char, c_null_char, &
+                                        c_long_long, c_signed_char
 
 implicit none ; private
 
@@ -16,6 +17,8 @@ public :: tim_io_createfile, tim_io_def_axis, tim_io_def_var
 public :: tim_io_put_global_att, tim_io_write_axis, tim_io_var_stagger
 public :: tim_io_write_decomposed, tim_io_write_plain, tim_io_closefile
 public :: tim_io_file_num_times, tim_io_file_time
+public :: tim_extfield_init, tim_extfield_size, tim_extfield_missing
+public :: tim_extfield_npts, tim_extfield_window, tim_extfield_interp
 public :: cstr
 
 interface
@@ -192,6 +195,47 @@ interface
     import :: c_int, c_double
     integer(c_int), value :: fh
   end function
+  integer(c_int) function tim_extfield_init(path, field, domain_handle, &
+      fms_calendar, actual_name, name_len) bind(C, name="tim_extfield_init")
+    import :: c_int, c_char
+    character(kind=c_char), intent(in) :: path(*), field(*)
+    integer(c_int), value :: domain_handle, fms_calendar, name_len
+    character(kind=c_char), intent(out) :: actual_name(*)
+  end function
+
+  subroutine tim_extfield_size(handle, siz) bind(C, name="tim_extfield_size")
+    import :: c_int
+    integer(c_int), value :: handle
+    integer(c_int), intent(out) :: siz(4)
+  end subroutine
+
+  real(c_double) function tim_extfield_missing(handle) &
+      bind(C, name="tim_extfield_missing")
+    import :: c_int, c_double
+    integer(c_int), value :: handle
+  end function
+
+  integer(c_long_long) function tim_extfield_npts(handle) &
+      bind(C, name="tim_extfield_npts")
+    import :: c_int, c_long_long
+    integer(c_int), value :: handle
+  end function
+
+  subroutine tim_extfield_window(handle, ni, nj, nz) &
+      bind(C, name="tim_extfield_window")
+    import :: c_int
+    integer(c_int), value :: handle
+    integer(c_int), intent(out) :: ni, nj, nz
+  end subroutine
+
+  integer(c_int) function tim_extfield_interp(handle, days, secs, buf, mask, &
+      want_mask) bind(C, name="tim_extfield_interp")
+    import :: c_int, c_double, c_signed_char
+    integer(c_int), value :: handle, days, secs, want_mask
+    real(c_double), intent(inout) :: buf(*)
+    integer(c_signed_char), intent(inout) :: mask(*)
+  end function
+
 end interface
 
 contains

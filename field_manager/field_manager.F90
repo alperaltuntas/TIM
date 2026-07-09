@@ -186,7 +186,6 @@ use    mpp_mod, only : mpp_error,   &
                        stdout
 use    fms_mod, only : lowercase,   &
                        write_version_number
-use fms2_io_mod, only: file_exists
 
 implicit none
 private
@@ -534,6 +533,7 @@ integer                          :: midcont
 integer                          :: model
 integer                          :: startcont
 integer                          :: io_status
+logical                          :: tbl_exists ! True if the field table file exists
 logical                          :: flag_method
 logical                          :: fm_success
 type(field_names_type_short)     :: text_names_short
@@ -554,7 +554,8 @@ if (.not.PRESENT(table_name)) then
 else
    tbl_name = trim(table_name)
 endif
-if (.not. file_exists(trim(tbl_name))) then
+inquire(file=trim(tbl_name), exist=tbl_exists) ! native INQUIRE replaces the fms2_io file_exists
+if (.not. tbl_exists) then
   if(present(nfields)) nfields = 0
   return
 endif

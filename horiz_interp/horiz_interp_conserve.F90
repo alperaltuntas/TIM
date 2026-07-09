@@ -42,7 +42,6 @@ module horiz_interp_conserve_mod
   use mpp_mod,               only: mpp_error, FATAL,  mpp_sync_self
   use mpp_mod,               only: COMM_TAG_1, COMM_TAG_2
   use fms_mod,               only: write_version_number
-  use grid2_mod,             only: get_great_circle_algorithm
   use constants_mod,         only: PI
   use horiz_interp_type_mod, only: horiz_interp_type
 
@@ -119,7 +118,11 @@ contains
     if(module_is_initialized) return
     call write_version_number("HORIZ_INTERP_CONSERVE_MOD", version)
 
-    great_circle_algorithm = get_great_circle_algorithm()
+    ! The grid2/fms2_io-based get_great_circle_algorithm() has been removed with
+    ! the FMS I/O layer; it read an optional attribute of grid_spec.nc and
+    ! defaulted to .false. when (as in all our configurations) no such file is
+    ! used.  The great-circle path is unsupported here (see the FATAL below).
+    great_circle_algorithm = .false.
 
     module_is_initialized = .true.
 

@@ -127,20 +127,7 @@ use  mpp_domains_mod, only:  domain2D, mpp_define_domains, &
                              mpp_get_compute_domain, mpp_get_global_domain, &
                              mpp_get_data_domain
 
-use       mpp_io_mod, only:  mpp_io_init, mpp_open, mpp_close,         &
-                       MPP_ASCII, MPP_NATIVE, MPP_IEEE32, MPP_NETCDF,  &
-                       MPP_RDONLY, MPP_WRONLY, MPP_APPEND, MPP_OVERWR, &
-                       MPP_SEQUENTIAL, MPP_DIRECT,                     &
-                       MPP_SINGLE, MPP_MULTI, MPP_DELETE, mpp_io_exit, &
-                       fieldtype, mpp_get_atts, mpp_get_info, mpp_get_fields, &
-                       do_cf_compliance
-
-use fms_io_mod, only : fms_io_init, &
-                       read_data, &
-                       get_mosaic_tile_file, get_global_att_value, file_exist, field_exist
-use fms2_io_mod, only: fms2_io_init
 use memutils_mod, only: print_memuse_stats, memutils_init
-use grid2_mod, only: grid_init, grid_end
 use fms_string_utils_mod, only: fms_c2f_string, fms_cstring2cpointer, string
 
 use, intrinsic :: iso_c_binding
@@ -151,16 +138,8 @@ private
 ! routines for initialization and termination of module
 public :: fms_init, fms_end
 
-! routines for reading/writing distributed data
-public :: read_data
-public :: get_global_att_value
-
-! routines for get mosaic information
-public :: get_mosaic_tile_file
-
 ! miscellaneous i/o routines
-public :: file_exist, check_nml_error, field_exist,     &
-          error_mesg, fms_error_handler
+public :: check_nml_error, error_mesg, fms_error_handler
 ! version logging routine (originally from fms_io)
 public :: write_version_number
 
@@ -183,9 +162,6 @@ public :: CLOCK_COMPONENT, CLOCK_SUBCOMPONENT, &
 public :: fms_c2f_string, fms_cstring2cpointer
 !public from the old fms_io but not exists here
 public :: string
-
-! public mpp-io interfaces
-public :: do_cf_compliance
 
 !Balaji
 !this is published by fms and applied to any initialized clocks
@@ -260,8 +236,6 @@ integer, public :: clock_flag_default
 
   logical :: module_is_initialized = .FALSE.
 
-  logical, private :: fms_io_initialized = .FALSE.!> used to make sure fms_io version is only
-                                                  !! written to log once
 
 !> @}
 
@@ -291,7 +265,6 @@ subroutine fms_init (localcomm, alt_input_nml_path)
 
 !--- needed to output the version number of constants_mod to the logfile ---
  use constants_mod, only: constants_version=>version !pjp: PI not computed
- use fms_io_mod,    only: fms_io_version
 
  integer, intent(in), optional :: localcomm
  character(len=*), intent(in), optional :: alt_input_nml_path
@@ -316,13 +289,6 @@ subroutine fms_init (localcomm, alt_input_nml_path)
        endif
     endif
     call mpp_domains_init()
-    call fms_io_init()
-    !! write_version_number is inaccesible from fms_io_mod so write it from here if not written
-    if(.not.fms_io_initialized) then
-      call write_version_number("FMS_IO_MOD", fms_io_version)
-      fms_io_initialized = .true.
-    endif
-    call fms2_io_init()
     logunitnum = stdlog()
 !---- read namelist input ----
 
@@ -398,7 +364,6 @@ subroutine fms_init (localcomm, alt_input_nml_path)
 
 !--- output version information constants to the logfile
     call write_version_number("CONSTANTS_MOD", constants_version)
-    call grid_init
 
 end subroutine fms_init
 
@@ -412,8 +377,6 @@ end subroutine fms_init
 subroutine fms_end ( )
 
     if (.not.module_is_initialized) return  ! return silently
-    call grid_end
-    call mpp_io_exit
     call mpp_domains_exit
     call mpp_exit
     module_is_initialized =.FALSE.

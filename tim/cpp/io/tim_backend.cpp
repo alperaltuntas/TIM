@@ -303,6 +303,38 @@ int Backend::Serial::attText(const std::string& path, const std::string& var,
   return rc;
 }
 
+int Backend::Serial::attDouble(const std::string& path, const std::string& var,
+                               const std::string& att, double* out, int n) {
+  int nc, v;
+  if (nc_open(path.c_str(), NC_NOWRITE, &nc) != NC_NOERR) return -1;
+  int rc = sFindVarCI(nc, var, &v, nullptr);
+  if (rc == 0) {
+    size_t len = 0;
+    rc = (nc_inq_attlen(nc, v, att.c_str(), &len) == NC_NOERR &&
+          (int)len >= n) ? 0 : -1;
+    if (rc == 0)
+      rc = (nc_get_att_double(nc, v, att.c_str(), out) == NC_NOERR) ? 0 : -1;
+  }
+  nc_close(nc);
+  return rc;
+}
+
+int Backend::Serial::timeName(const std::string& path, std::string* name) {
+  int nc, unlim = -1;
+  if (nc_open(path.c_str(), NC_NOWRITE, &nc) != NC_NOERR) return -1;
+  nc_inq_unlimdim(nc, &unlim);
+  int rc = -1;
+  if (unlim >= 0) {
+    char buf[NC_MAX_NAME + 1] = {0};
+    if (nc_inq_dimname(nc, unlim, buf) == NC_NOERR) {
+      *name = buf;
+      rc = 0;
+    }
+  }
+  nc_close(nc);
+  return rc;
+}
+
 int Backend::Serial::varSizes(const std::string& path, const std::string& var,
                               int sizes[4]) {
   int nc, v;
