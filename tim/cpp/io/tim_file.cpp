@@ -1,9 +1,11 @@
 #include "tim_file.hpp"
 
-#include "tim_decomp_cache.hpp"
+#include "tim_dofmap.hpp"
 #include "tim_iosystem.hpp"
 
+#include <algorithm>
 #include <cctype>
+#include <climits>
 #include <cstdio>
 #include <vector>
 
@@ -178,11 +180,10 @@ int File::readDecomposed(const std::string& varname, int domainKey,
   std::vector<double> piece;
   for (int c = 0; c < ncomp; ++c) {
     const Window& cw = comps[c];
-    DecompId ioid = cache.get(domainKey, d, fstag, nz, nz2,
-                              DecompCache::Family::ReadComponent, c);
-    piece.assign((size_t)cw.npts() * nz, 0.0);
-    int rc = Backend::readDArray(id_, v, ioid, (long long)piece.size(),
-                                 piece.data());
+    const DofMap& map = cache.fromDomain(domainKey, d, fstag, nz, nz2,
+                                         DofMapCache::Family::ReadComponent, c);
+    piece.assign((size_t)map.count(), 0.0);  // == cw.npts()*nz
+    int rc = readDistributed(varname, map, timelevel, piece.data());
     if (rc != 0) {
       std::fprintf(stderr, "TIM File: read %s comp %d rc=%d\n", varname.c_str(),
                    c, rc);
@@ -196,6 +197,92 @@ int File::readDecomposed(const std::string& varname, int domainKey,
               (i - wdw.is + shx)] =
               piece[(size_t)k * ni * nj + (size_t)(j - cw.js) * ni +
                     (i - cw.is)];
+  }
+  return 0;
+}
+
+int File::readDistributed(const std::string& varname, const DofMap& map,
+                          int timelevel, double* buf, bool single) {
+  VarId v;
+  if (findVarCI(varname, &v) != 0) return -1;
+  if (varHasUnlim(v))
+    Backend::setFrame(id_, v, timelevel > 0 ? timelevel - 1 : 0);
+  return Backend::readDArray(id_, v, map.id(), map.count(), buf, single);
+}
+
+int File::readReplicated(const std::string& varname, int rec, double* out) {
+  VarId v;
+  if (findVarCI(varname, &v) != 0) return -1;
+  bool single = false;
+  Backend::inqVarSingle(id_, v, &single);
+
+  // Spatial shape in Fortran order (x first); varSizes lists the record dim
+  // last, so drop it. nds = spatial rank.
+  int sizes[4] = {1, 1, 1, 1};
+  const int ndf = varSizes(varname, sizes);
+  if (ndf < 1) return -1;
+  const bool has_t = varHasUnlim(v);
+  const int nds = has_t ? ndf - 1 : ndf;
+  const long long nx = sizes[0];
+  const long long ny = (nds >= 2) ? sizes[1] : 1;
+  const long long nz = (nds >= 3) ? sizes[2] : 1;
+  const long long n = nx * ny * nz;
+
+  const long long bytes = n * (long long)sizeof(double);
+  if (bytes < sys_->replicatedReadThresholdBytes()) {
+    // Small field: one collective get_var reads on the IO root and broadcasts
+    // to every compute task — a tree bcast beats the allgather latency here.
+    long long start[4] = {0, 0, 0, 0}, count[4] = {1, 1, 1, 1};
+    int p = ndf - 1;                 // x is the fastest (last) file dim
+    count[p--] = nx;
+    if (nds >= 2) count[p--] = ny;
+    if (nds >= 3) count[p--] = nz;
+    if (has_t) { start[0] = rec > 0 ? rec - 1 : 0; count[0] = 1; }
+    return Backend::getVaraDouble(id_, v, start, count, ndf, out);
+  }
+
+  // Large field: block-decomposed collective read + MPI_Allgatherv (striped).
+  auto& cache = sys_->decomps();
+  MPI_Comm comm = sys_->comm();
+  int nranks = 1;
+  MPI_Comm_size(comm, &nranks);
+  if (has_t) Backend::setFrame(id_, v, rec > 0 ? rec - 1 : 0);
+
+  int gd3[3];
+  int gnd;
+  if (nz > 1) { gnd = 3; gd3[0] = (int)nz; gd3[1] = (int)ny; gd3[2] = (int)nx; }
+  else        { gnd = 2; gd3[0] = (int)ny; gd3[1] = (int)nx; }
+  std::span<const int> gspan(gd3, gnd);
+
+  auto gatherLevel = [&](const DofMap& map, long long len, long long base) -> int {
+    std::vector<double> local((size_t)map.count());
+    int rc = Backend::readDArray(id_, v, map.id(), map.count(), local.data(),
+                                 single);
+    if (rc != 0) return rc;
+    const long long chunk = (len + nranks - 1) / nranks;
+    std::vector<int> counts(nranks), displs(nranks);
+    for (int r = 0; r < nranks; ++r) {
+      const long long s = std::min((long long)r * chunk, len);
+      const long long e = std::min((long long)(r + 1) * chunk, len);
+      counts[r] = (int)(e - s);
+      displs[r] = (int)s;
+    }
+    MPI_Allgatherv(local.data(), (int)map.count(), MPI_DOUBLE, out + base,
+                   counts.data(), displs.data(), MPI_DOUBLE, comm);
+    return 0;
+  };
+
+  if (n < (long long)INT_MAX) {
+    return gatherLevel(cache.blockDecomp(gspan, single), n, 0);
+  }
+  // n exceeds int displacement range (a huge 3-D replicated field): stripe one
+  // z-level at a time so each Allgatherv stays within int bounds.
+  const long long levn = nx * ny;
+  for (long long k = 0; k < nz; ++k) {
+    const DofMap& map =
+        cache.blockDecompRange(gspan, levn, k * levn, single);
+    int rc = gatherLevel(map, levn, k * levn);
+    if (rc != 0) return rc;
   }
   return 0;
 }
@@ -457,14 +544,20 @@ int File::writeDecomposed(const std::string& varname, const double* buf,
             buf[(size_t)k * wni * wdw.nj() + (size_t)(j - wdw.js) * wni +
                 (i - wdw.is)];
 
-  DecompId ioid = sys_->decomps().get(
+  const DofMap& map = sys_->decomps().fromDomain(
       domain_key_, domain_, vi.stagger, vi.nz, vi.nz2,
-      DecompCache::Family::WritePartition, 0, vi.single);
-  int rc = Backend::writeDArray(id_, v, ioid, (long long)part.size(),
-                                part.data(), vi.fill, vi.single);
+      DofMapCache::Family::WritePartition, 0, vi.single);
+  int rc = writeDistributed(varname, map, part.data(), vi.fill, vi.single);
   if (rc != 0)
     std::fprintf(stderr, "TIM File: write %s rc=%d\n", varname.c_str(), rc);
   return rc;
+}
+
+int File::writeDistributed(const std::string& varname, const DofMap& map,
+                           const double* buf, double fill, bool single) {
+  VarId v;
+  if (Backend::findVar(id_, varname, &v) != 0) return -1;
+  return Backend::writeDArray(id_, v, map.id(), map.count(), buf, fill, single);
 }
 
 int File::writePlain(const std::string& varname, const double* data, int n,

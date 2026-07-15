@@ -12,12 +12,16 @@
 namespace TIM {
 namespace IO {
 
-class DecompCache;
+class DofMapCache;
 
 class IoSystem {
  public:
   struct Options {
     int niotasks = -1;  // -1: auto = min(nprocs/4, 64) (see sweep findings)
+    // A non-domain (replicated) read at or above this size uses a block-
+    // decomposed collective read + MPI_Allgatherv; smaller fields read once and
+    // broadcast, because the collective+allgather latency loses to a tree bcast.
+    long long replicated_read_threshold_bytes = 8LL << 20;  // 8 MiB
   };
   explicit IoSystem(MPI_Comm comm) : IoSystem(comm, Options{}) {}
   IoSystem(MPI_Comm comm, const Options& opts);
@@ -27,7 +31,10 @@ class IoSystem {
 
   SysId sys() const { return sys_; }
   MPI_Comm comm() const { return comm_; }
-  DecompCache& decomps() { return *decomps_; }
+  DofMapCache& decomps() { return *decomps_; }
+  long long replicatedReadThresholdBytes() const {
+    return replicated_read_threshold_bytes_;
+  }
 
  private:
   // Iotask policy, isolated for tuning; sweep evidence says cap the
@@ -36,7 +43,8 @@ class IoSystem {
 
   MPI_Comm comm_ = MPI_COMM_NULL;
   SysId sys_ = -1;
-  std::unique_ptr<DecompCache> decomps_;
+  long long replicated_read_threshold_bytes_ = 8LL << 20;
+  std::unique_ptr<DofMapCache> decomps_;
 };
 
 }  // namespace IO

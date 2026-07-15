@@ -39,6 +39,10 @@ TIM::IO::IoSystem::Options resolveOptions() {
   // config-free and unit-testable.
   TIM::IO::IoSystem::Options o;
   o.niotasks = TIM::Config::getInt("tim.io.pio_ntasks", -1, "TIM_PIO_NTASKS");
+  o.replicated_read_threshold_bytes =
+      (long long)TIM::Config::getInt("tim.io.replicated_read_threshold_mb", 8,
+                                     "TIM_REPLICATED_READ_THRESHOLD_MB")
+      << 20;
   return o;
 }
 
@@ -73,8 +77,12 @@ extern "C" {
 
 void tim_io_init(int fcomm) {
   if (g_ctx) return;
+  // -1 is the sentinel Fortran passes for "no communicator" (see
+  // tim_io_interface.F90 callers); real Fortran MPI_Comm handles are NOT
+  // guaranteed to be non-negative (e.g. Cray MPICH hands out large negative
+  // handles), so the sentinel must be an exact match, not a sign check.
   g_ctx = std::make_unique<IoContext>(
-      fcomm < 0 ? MPI_COMM_WORLD : MPI_Comm_f2c((MPI_Fint)fcomm),
+      fcomm == -1 ? MPI_COMM_WORLD : MPI_Comm_f2c((MPI_Fint)fcomm),
       resolveOptions());
 }
 
@@ -122,9 +130,16 @@ using TIM::IO::Backend;
 
 int tim_io_read_plain(const char* path, const char* varname, int timelevel,
                       int n, double* buf) {
+  // read_data for scalar/1D vars is COLLECTIVE on the MOM6 side (every rank
+  // reads the full replicated field; no root guard, no broadcast — verified in
+  // MOM_io_infra.F90). Route it through the held-open PIO handle + a collective
+  // get_var that reads on the IO root and broadcasts, instead of every rank
+  // running its own nc_open (the metadata storm this refactor removes).
   if (debugOn())
     std::fprintf(stderr, "TIM_IO read_pl  %s:%s n=%d\n", path, varname, n);
-  return Backend::Serial::readPlain(path, varname, timelevel, n, buf);
+  File* f = ctx().readFile(path);
+  if (!f) return -1;
+  return f->readPlain(varname, timelevel, n, buf);
 }
 
 int tim_io_var_exists(const char* path, const char* varname) {

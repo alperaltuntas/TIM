@@ -231,6 +231,7 @@ add_library(tim STATIC
     tim/cpp/tim_coms_infra.cpp
     tim/cpp/tim_coms_infra_C_API.cpp
     tim/cpp/tim_profile.cpp
+    tim/cpp/io/tim_dofmap.cpp
 )
 target_include_directories(tim PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/tim/cpp>

@@ -1,6 +1,6 @@
 #include "tim_iosystem.hpp"
 
-#include "tim_decomp_cache.hpp"
+#include "tim_dofmap.hpp"
 
 namespace TIM {
 namespace IO {
@@ -19,12 +19,14 @@ int IoSystem::chooseIoTasks(int nprocs, const Options& opts) {
   return niotasks;
 }
 
-IoSystem::IoSystem(MPI_Comm comm, const Options& opts) : comm_(comm) {
+IoSystem::IoSystem(MPI_Comm comm, const Options& opts)
+    : comm_(comm),
+      replicated_read_threshold_bytes_(opts.replicated_read_threshold_bytes) {
   int nprocs = 1;
   MPI_Comm_size(comm_, &nprocs);
   const int niotasks = chooseIoTasks(nprocs, opts);
   sys_ = Backend::init(comm_, niotasks, nprocs / niotasks);
-  decomps_ = std::make_unique<DecompCache>(sys_);
+  decomps_ = std::make_unique<DofMapCache>(sys_, comm_);
 }
 
 IoSystem::~IoSystem() {

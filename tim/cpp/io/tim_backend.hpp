@@ -82,7 +82,13 @@ struct Backend {
 
   // --- data ---
   static int setFrame(FileId, VarId, int frame0);
-  static int readDArray(FileId, VarId, DecompId, long long n, double* buf);
+  // single: the variable is float, so read through a float buffer (read_darray
+  // does not type-convert) and widen to double. The decomp must match: pass a
+  // float (PIO_REAL) DecompId when single.
+  static int readDArray(FileId, VarId, DecompId, long long n, double* buf,
+                        bool single = false);
+  // True when the variable's on-disk type is single precision (NC_FLOAT).
+  static int inqVarSingle(FileId, VarId, bool* is_single);
   // fill: the VARIABLE's fill value (must match its _FillValue or the backend
   // rejects the write); single converts the buffer to float for float vars.
   static int writeDArray(FileId, VarId, DecompId, long long n,

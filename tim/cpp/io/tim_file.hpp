@@ -22,6 +22,7 @@ namespace TIM {
 namespace IO {
 
 class IoSystem;
+class DofMap;
 
 // A File borrows its IoSystem (which must outlive it); ensemble runs hand
 // each member's Files that member's IoSystem.
@@ -56,6 +57,18 @@ class File {
   int readDecomposed(const std::string& varname, int domainKey,
                      const Decomp2D& domain, Stagger stagger, int timelevel,
                      int nz, int nz2, double* buf, ReadInfo* info = nullptr);
+  // The single deep read primitive: fill `buf` (map.count() doubles) from
+  // `varname` at `timelevel` (1-based; 0 = no record) through an arbitrary
+  // DofMap. readDecomposed is a thin wrapper over this + DofMapCache::fromDomain.
+  // single: the variable is float (map must be a float/PIO_REAL decomp).
+  int readDistributed(const std::string& varname, const DofMap& map,
+                      int timelevel, double* buf, bool single = false);
+  // Read the whole global field of `varname` at record `rec` (1-based; 0 = the
+  // sole record) and replicate it on EVERY rank. `out` is sized to the full
+  // global field, x fastest (then y, then z). Fields at/above the iosystem's
+  // replicated-read threshold use a block-decomposed collective read +
+  // MPI_Allgatherv; smaller fields use one broadcasting get_var. Collective.
+  int readReplicated(const std::string& varname, int rec, double* out);
   // Whole (small) variable, replicated to every rank.
   int readPlain(const std::string& varname, int timelevel, int n, double* buf);
   // Replicated hyperslab; start/count given 1-based in Fortran dim order
@@ -109,6 +122,11 @@ class File {
   // internal (FMS write_time_if_later semantics) when tstamp is provided.
   int writeDecomposed(const std::string& varname, const double* buf,
                       std::optional<double> tstamp);
+  // The deep write primitive: symmetric partner of readDistributed. Writes
+  // map.count() doubles (converted to float when single) through an arbitrary
+  // DofMap; fill must equal the variable's own _FillValue.
+  int writeDistributed(const std::string& varname, const DofMap& map,
+                       const double* buf, double fill, bool single);
   int writePlain(const std::string& varname, const double* data, int n,
                  std::optional<double> tstamp);
 

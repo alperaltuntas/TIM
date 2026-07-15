@@ -158,9 +158,24 @@ int Backend::getAttText(FileId f, VarId v, const std::string& name,
 int Backend::setFrame(FileId f, VarId v, int frame) {
   return PIOc_setframe(f, v, frame);
 }
-int Backend::readDArray(FileId f, VarId v, DecompId d, long long n, double* buf) {
+int Backend::readDArray(FileId f, VarId v, DecompId d, long long n, double* buf,
+                        bool single) {
+  if (single) {
+    static float fdummy = 0.0f;
+    std::vector<float> fbuf((size_t)n);
+    int rc = PIOc_read_darray(f, v, d, (PIO_Offset)n,
+                              n ? (void*)fbuf.data() : (void*)&fdummy);
+    for (long long i = 0; i < n; ++i) buf[i] = (double)fbuf[(size_t)i];
+    return rc;
+  }
   static double dummy = 0.0;
   return PIOc_read_darray(f, v, d, (PIO_Offset)n, n ? buf : &dummy);
+}
+int Backend::inqVarSingle(FileId f, VarId v, bool* is_single) {
+  nc_type t = NC_NAT;
+  int rc = PIOc_inq_vartype(f, v, &t);
+  if (rc == PIO_NOERR) *is_single = (t == PIO_FLOAT);
+  return rc;
 }
 int Backend::writeDArray(FileId f, VarId v, DecompId d, long long n,
                          const double* buf, double fill, bool single) {

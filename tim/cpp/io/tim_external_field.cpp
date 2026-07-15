@@ -238,12 +238,13 @@ ExternalField::ExternalField(IoSystem& sys, const std::string& path,
     }
   }
 
-  if (decomposed_) {
-    file_ = File::openForRead(sys_, path_);
-    if (!file_) {
-      error_ = "cannot open " + path_ + " for decomposed reads";
-      return;
-    }
+  // Open through PIO unconditionally: decomposed reads need the collective
+  // File; replicated reads flow through File::readReplicated (block-collective
+  // or broadcasting get_var) on this same handle — no more per-rank nc_open.
+  file_ = File::openForRead(sys_, path_);
+  if (!file_) {
+    error_ = "cannot open " + path_;
+    return;
   }
   buf_[0].resize((size_t)npts_);
   buf_[1].resize((size_t)npts_);
@@ -276,17 +277,9 @@ int ExternalField::loadRecord(int rec, int* slot, int avoid) {
     rc = file_->readDecomposed(varname_, domain_key_, domain_,
                                Stagger::Center, rec, nz_, 1, buf_[s].data());
   } else {
-    // Replicated read of one record: full-grid hyperslab (readPlain is
-    // 0d/1d-only). start/count are 1-based Fortran order (x,y,z,t).
-    int start[4] = {1, 1, 1, 1}, count[4] = {siz_[0], siz_[1], 1, 1};
-    if (siz_[2] > 1) {  // (x,y,z,t)
-      count[2] = siz_[2];
-      start[3] = rec;
-    } else {            // (x,y,t)
-      start[2] = rec;
-    }
-    rc = Backend::Serial::readSlab(path_, varname_, start, count,
-                                   buf_[s].data());
+    // Replicated read of one record: the whole global field on every rank,
+    // striped-collective or broadcast per the threshold — no per-rank nc_open.
+    rc = file_->readReplicated(varname_, rec, buf_[s].data());
   }
   if (rc != 0) {
     error_ = "record read failed for " + varname_ + " in " + path_;
