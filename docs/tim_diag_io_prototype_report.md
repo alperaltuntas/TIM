@@ -410,6 +410,25 @@ Carrying the architecture of the plan of record with these amendments:
    per-PE-differing hyperslabs (collective would deadlock) — the one surviving every-rank
    bulk read; (b) metadata/attribute/time-value queries stay every-rank (bounded, small) —
    both are flagged follow-ups, not blockers.
+10. **C++20 project-wide** (2026-07-15): nvc++ binds the standard (C++23 deferred —
+    EDG support incomplete; `std::expected`/`std::mdspan` are host-libstdc++-dependent
+    across the compiler matrix). Already applied: all turbo-stack mkmf templates,
+    `test_mom` CMake, docs; TIM's CMake already required `cxx_std_20`. Verified: full
+    nvc++ 25.9 compile + icpx/g++ syntax checks of all `tim/cpp` sources. Production
+    code should use C++20 where it clarifies (`std::span` for buffer+count params,
+    designated initializers, `starts_with`, `operator<=>`) without modernization churn.
+11. **SCORPIO swappability is source-level only — behavior must be validated per
+    library.** SCORPIO is primarily an internal-behavior fork (aggressive data+metadata
+    caching/aggregation → different host-memory high-water and flush timing behind the
+    same `PIOc_*` API; async service relocates buffering to I/O procs; ADIOS iotype adds
+    engine buffers + deferred netCDF conversion). TIM's File contract already tolerates
+    any caching policy (`write()` = "library took a copy"; durability pinned to
+    `flush()`/`close()` — so `saveState()` must end with an explicit flush). Any SCORPIO
+    validation run must measure memory high-water, flush/durability timing, and close
+    cost — not just file correctness; the library buffer limit becomes a `TIM::Config`
+    knob when needed (at 1/36° a per-rank buffered 3D slab is hundreds of MB between
+    flushes). Note for profiling: deferred flushes shift where I/O time *appears*
+    (cheap writes, expensive close).
 
 ### 3.3 Work decomposition — PR series on `parallelio`
 

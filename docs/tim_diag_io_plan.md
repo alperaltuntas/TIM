@@ -38,6 +38,53 @@ Decisions made:
   must probe performance at production scale (cesm_t232, 768 ranks) so that performance
   findings shape the production design rather than being tuned in after it.
 
+## Status (2026-07-15) — production pass is a GO
+
+- **Prototype CLOSED** (2026-07-09); findings + production plan in
+  `docs/tim_diag_io_prototype_report.md` (commit `2338fae4`).
+- **Post-close addendum landed on the prototype**: the domain-agnostic DofMap refactor
+  (commits `e46d4863`, `e70b2e78`) — see "Domain-agnostic read layering" below and
+  report design delta #9. Gates: DOF bit-identity vs captured golden PASS; get_vara
+  broadcast-semantics probe PASS; blockDecomp round-trip (both threshold branches) PASS;
+  ExternalField small+large PASS; double_gyre runs clean post-refactor (explicit
+  pre/post `ocean.stats` A/B still to be confirmed); 768-rank cesm_t232 seam-timer
+  non-regression job in flight at time of writing (baseline to match: 1.32 s @768/32
+  iotasks, 1.51 s @128).
+- **Project buy-in obtained** (PI/Co-PI, 2026-07-15). Commitments made in that review,
+  now scheduled in this plan: an EARLY GPU D2H-staging benchmark (P0 item 5), a
+  tuned-io_layout FMS A/B for baseline fairness, and the async-iotasks-on-idle-GPU-host-
+  cores experiment (both Phase 3).
+- **C++20 adopted project-wide** (mkmf templates, CMake, this doc's conventions; verified
+  on nvc++ 25.9 / icpx 2025.2.1 / g++; C++23 deferred until nvhpc support matures).
+- **Next**: fresh `parallelio` branch, PR series per report §3.3 (track A first). No
+  prototype-branch merges; no plan/report/CLAUDE.md files in production PRs.
+
+### Scope accounting — this project vs the total FMS replacement
+
+Line counts of the FMS surface MOM6 needs (subsystem dirs in this fork; wrapper files
+in MOM6 `config_src/infra/FMS2`), as of 2026-07-15:
+
+| Subsystem | Lines | Status |
+|---|---|---|
+| fms2_io (file I/O) | 12,130 | **replaced** (this project) |
+| diag_manager | 13,314 | **replaced** (this project) |
+| time_manager | 3,723 | **ported** (TIM::Time; full cutover pending) |
+| time_interp | 2,387 | **replaced** (ExternalField, this project) |
+| axis_utils | 507 | **eliminated** (this project) |
+| mpp (comms + domains + clocks + error) | ~20,000 live | remaining — the big one |
+| horiz_interp | 5,351 | remaining |
+| coupler types | 4,914 | remaining (NUOPC coupled runs) |
+| data_override | 1,415 | remaining (stubbed; coupled runs need it) |
+| constants, misc | ~200 | trivial |
+
+This project ≈ **~50% of the total replacement scope by volume** (~32k of ~65k lines;
+the wrapper-surface lens agrees: ~45% of the 7,067-line infra-wrapper surface). By risk
+it was more than half (external-library integration + subtle semantics + a new
+capability). Of the remaining half, **mpp_domains (halo exchange/decomposition) is most
+of the substance** — the other performance- and GPU-critical subsystem (GPU-aware
+exchanges; eventual AMReX DistributionMapping alignment, Phase 4). The tail
+(horiz_interp, coupler types, data_override) is workmanlike by comparison.
+
 ## Key facts (verified during exploration)
 
 - MOM6's ENTIRE FMS diag surface = 11 procedures + 4 constants in
@@ -308,6 +355,15 @@ an interface shaped by its first feature (e.g. a read-only File) and bolting the
 4. **Bridges:** `tim_domain_register` bind(C) call from `MOM_domain_infra.F90` (extract
    via mpp_get_compute/global_domain, layout, symmetric offsets → Decomp2D registry);
    time crossing as tim_time_c + calendar enum (FMS stays the calendar oracle until 2a).
+5. **Early GPU D2H-staging benchmark (PI-review commitment; promoted from Phase 3):**
+   a standalone mini-app (amrex_mini_app pattern) on a GPU node measuring the two
+   staging patterns for a realistic diag load (~hundreds of 2D/3D fields, double_gyre-
+   to-t232-sized slabs): (a) per-timestep device→host copy of every posted field (the
+   FMS-equivalent pattern) vs (b) device-side accumulation in `The_Arena` buffers with
+   one pinned-host `finalizeToHost` per output window. Output: measured D2H traffic +
+   wallclock ratio, and confirmation that the once-per-window pattern's payoff justifies
+   the Accumulator device design before Phase 2 builds it. This de-risks the "GPU
+   considerations not yet measured" concern with data, early.
 
 ### Phase 1 — TIM::IO File abstraction + MOM6 I/O cutover
 The COMPLETE File interface (open/inquiry/read/metadata-definition/write) implemented as
@@ -361,6 +417,18 @@ one unit against the frozen spike contract — not a read-only slice extended la
   production implementation meets or beats those prototype baselines (and FMS baselines
   via tim_profile/CPU_stats), plus `--offload` nvhpc builds each phase (PIO stays
   host-only; accumulation buffers flip to device via The_Arena).
+- **Tuned-io_layout FMS A/B (PI-review commitment):** all prototype ratios are vs FMS at
+  IO_LAYOUT=1,1 (CESM's actual config but not FMS's best case). Run the same seam-timed
+  reads/writes against FMS with a tuned io_layout for an honest architectural comparison
+  (expect FMS to close some of the read gap; writes still carry fileset + recombine cost).
+- **Async-iotasks experiment (PI-review commitment):** PIO async mode with dedicated I/O
+  ranks on the idle host cores of GPU nodes (~60/node) — overlap file I/O with GPU
+  compute; measure vs the intracomm baseline. Also the natural on-ramp for evaluating
+  SCORPIO's async service if PIO2's proves limiting.
+- **1/36°-class write test:** a synthetic-or-real high-res case write at scale to verify
+  the extrapolated feasibility claim (FMS ≈ 100 min vs TIM ≈ minutes for a ~1.2 TB
+  restart) and to exercise the buffer-limit knob + Allgatherv level-striping paths under
+  real memory pressure.
 
 ### Phase 4 — Deferred (explicit)
 - Native domain2D replacement (Decomp2D producer switches to AMReX DistributionMapping),
@@ -386,6 +454,20 @@ gates pass on both examples. `--infra FMS2` never touched.
 6. PIO2/SCORPIO API drift (SCORPIO has diverged in places: async I/O tasks, ADIOS iotype,
    some added args) — mitigated by the backend seam + the spike's shared-subset contract;
    CI could later add a SCORPIO build of the spike to keep the seam honest.
+   **The API subset is only the source-compatibility seam — behavior differs underneath.**
+   SCORPIO is primarily an internal-behavior fork ("improvements in user data caching and
+   aggregation algorithms", per its docs): both libraries copy write_darray data into
+   internal buffers and defer real I/O, but SCORPIO caches data+metadata ops far more
+   aggressively (different host-memory high-water and flush timing behind an identical
+   API), its async service relocates buffering to dedicated I/O procs, and the ADIOS
+   iotype adds ADIOS2 engine buffers + deferred netCDF conversion. Mitigations:
+   (a) TIM's File contract tolerates any caching policy by construction — write() promises
+   only "library took a copy"; durability is pinned to flush()/close(); callers can never
+   assume drain timing; (b) any SCORPIO validation run must measure memory high-water,
+   flush/durability timing, and close cost — not just file correctness; (c) the library
+   buffer limit (e.g. PIOc_set_buffer_size_limit) becomes a TIM::Config knob when needed —
+   at 1/36° a per-rank buffered 3D field slab is hundreds of MB between flushes, so the
+   limit is a real tunable, not a footnote.
 7. Diag-restart state volume (~one 2D/3D partial-sum buffer per actively-averaged stream;
    at cesm_t232 scale potentially hundreds of 3D fields) — written once per restart through
    the same parallel path as restarts themselves; acceptable, but monitor size/time and
