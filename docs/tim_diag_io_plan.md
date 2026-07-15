@@ -61,7 +61,8 @@ Decisions made:
 - TIM C++ conventions to follow: `tim/cpp` + `namespace TIM`, C-API triplet pattern of
   `tim_coms_infra_C_API.{h,cpp}` + `tim/fortran/*_interface.F90`; `amrex::ParallelDescriptor`
   is the MPI layer (AMReX already initialized on MOM's communicator,
-  `MOM_coms_infra.F90:517`); errors via amrex::Abort; C++17; mkmf sweeps all TIM .cpp into
+  `MOM_coms_infra.F90:517`); errors via amrex::Abort; C++20 (nvc++ binds the standard;
+  C++23 deferred until nvhpc support matures); mkmf sweeps all TIM .cpp into
   libTIM.a (build.sh threads AMReX-style include/link flags).
 - Derecho: `parallelio/2.6.8` module exists for intel/gcc/nvhpc with PnetCDF + parallel
   netCDF4 (`libpioc`, `pio.h`, CMake configs). **Gotcha: the compiler-only-hash builds
@@ -123,11 +124,33 @@ tim/cpp/io/tim_file.{hpp,cpp}         TIM::IO::File — THE deep module: open()-
                                       semantics), case-insensitive findVar/read,
                                       writeAxes() writes global coords (kills
                                       get_global_io_domain_indices + .nc.XXXX filesets),
-                                      readSlab, metadata queries, checksum atts,
-                                      setFilenameSuffix (filename_appendix)
-tim/cpp/io/tim_decomp_cache.cpp       internal: PIOc_InitDecomp cache keyed by
-                                      (domain,stagger,nz,type); dofs from global indices;
-                                      symmetric +1 row/col on edge ranks; masked layouts
+                                      metadata queries, checksum atts,
+                                      setFilenameSuffix (filename_appendix). Reads layer on
+                                      the DofMap core: readDistributed(DofMap) is the one
+                                      deep read primitive; readDecomposed wraps it +
+                                      DofMapCache::fromDomain (per staggered component);
+                                      readReplicated returns a full field on every rank
+                                      (block-collective + Allgatherv at/above the
+                                      tim.io.replicated_read_threshold_mb size, a
+                                      broadcasting get_var below it). writeDecomposed
+                                      routes through fromDomain + writeDistributed (bytes
+                                      unchanged). readSlab stays rank-independent
+                                      (Backend::Serial) for MOM's per-PE region reads
+tim/cpp/io/tim_dofmap.{hpp,cpp}       DofMap (opaque handle: PIO decomp id + local
+                                      count) + DofMapCache — the DOMAIN-AGNOSTIC
+                                      decomposition core. A PIO decomp is not a domain
+                                      (PIOc_InitDecomp takes only gdims + per-rank dofs),
+                                      so the cache owns three factories: fromDomain
+                                      (dofs from a Decomp2D window; the read-component /
+                                      write-partition families, the k*gnx*gny+(j-1)*gnx+i
+                                      formula, symmetric +1 edges, masked layouts,
+                                      precision-keyed decomps — all moved verbatim from
+                                      the retired DecompCache, bit-identical), blockDecomp
+                                      (contiguous 1-D block partition of a flattened array
+                                      over the iosystem comm — no domain), and
+                                      blockDecompRange (one flat sub-range, for striped
+                                      3-D replicated reads). The cache is the sole creator
+                                      of decompositions (InitDecomp is collective/expensive)
 tim/cpp/diag/tim_diag_config.{hpp,cpp} DiagConfig{FileSpec,FieldSpec} + parseClassicDiagTable
                                       (YAML front-end slots in later against same model)
 tim/cpp/diag/tim_diag_axis.{hpp,cpp}  AxisRegistry (value store; null_axis=0)
@@ -170,6 +193,52 @@ mapping, logical-mask+rmask merge into one rmask, is_in/ie_in defaulting→Local
 null_axis_id→zero-axis registration, r4→r8 copies. `Post{data, extents, rmask, weight,
 memspace}` is the core diag primitive — takes a raw pointer so both today's Fortran host
 arrays and future device-resident MultiFab components work (wrapper flips memspace flag).
+
+### Domain-agnostic read layering (post-refactor)
+
+The read primitive takes an arbitrary **DofMap**; the MOM domain is one of the DofMap
+factories, not a requirement. This inverts the old layering (where a read needed a
+Decomp2D) so non-domain reads can stripe collectively at 1/36° scale instead of every
+rank doing its own `nc_open`. Rules established while landing it:
+
+- **Domain reads are unchanged by construction.** `fromDomain` produces the exact DOF
+  lists the retired `DecompCache` did (verified bit-identical via a captured golden;
+  `prototype/pio_spike/dof_{capture,identity}.cpp`), so the rearranger schedules and the
+  bytes on disk are identical — domain-decomposed performance is unaffected.
+- **`readReplicated` policy is size-tiered.** At/above `tim.io.replicated_read_threshold_mb`
+  (env `TIM_REPLICATED_READ_THRESHOLD_MB`, default 8) it block-decomposes the flattened
+  field, `read_darray`s it collectively, and `MPI_Allgatherv`s to replicate; below it, one
+  `PIOc_get_vara_double` reads on the I/O root and broadcasts (proven in
+  `prototype/pio_spike/probe_getvar_bcast.cpp`) — a tree bcast beats the allgather latency
+  for small fields. Both branches leave the full field on every rank.
+- **`Backend::Serial` is demoted to metadata/attribute/dimension/time-axis probes** plus
+  the root side of any root+bcast. Its every-rank bulk read of external-forcing records is
+  gone (`ExternalField` now flows through `File::readReplicated`); `readPlain`
+  (scalar/1D replicated) now rides the broadcasting `get_var` on the held-open PIO handle.
+
+**Flagged follow-ups (deferred):**
+1. **Region `readSlab` stays rank-independent.** MOM's `read_field_{2d,3d}_region`
+   (regridding) call `tim_io_read_slab` on every PE with *per-PE-differing* start/count, so
+   it cannot become a collective/broadcasting read without deadlock or wrong data. It
+   remains `Backend::Serial` (independent `nc_open` per PE). This is the one surviving
+   every-rank bulk-read path; a future optimization could detect uniform args across ranks
+   and route those through a collective `get_var`, but the seam cannot tell in general.
+   (Deviation from the original refactor brief's "readSlab has no callers outside
+   root+bcast", justified by verified MOM6 call-site collectivity.)
+2. **Metadata/attribute/time-value queries stay every-rank** (`Backend::Serial`, bounded
+   and small). A cheap root+bcast wrapper for these is a clean future win but not required.
+3. **Int-displacement chunking of huge replicated reads.** `MPI_Allgatherv` displacements
+   are `int`; a >INT_MAX-element replicated field (only a 3-D field ≳2 GB/rank, which
+   nobody replicates) falls back to striping one z-level at a time (`blockDecompRange`).
+   Realistic replicated fields (2-D at 1/36° ≈ 84 M elements) take the single-shot path.
+4. **Diag-restart axis-coordinate variables hold uninitialized values** (pre-existing, not
+   from this refactor). `TIM.diag.res.nc` defines index-dimension coordinate variables
+   (`sx_c`, `sy_n`, `sx_e`, `sy_c`, `dim2`, `dim3`) but the diag manager's `saveState`
+   never writes meaningful coordinates for them, so they carry heap garbage that differs
+   run-to-run of the *same* binary. Found during the double_gyre A/B: all accumulator DATA
+   (`acc0..acc9`) and every model output (`ocean.stats`, `MOM.res.nc`, history) are
+   bit-identical run-to-run and before/after; only these cosmetic axis coords vary. Fix in
+   the diag-restart writer (write the index coords, or omit the coordinate variables).
 
 ## Prototype pass (first; timeboxed ~2-3 weeks)
 

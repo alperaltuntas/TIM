@@ -13,13 +13,13 @@ HOST_CXX ?= g++
 host: parse_test reduce_test time_test
 
 parse_test: parse_test.cpp $(TIM)/diag/tim_diag_config.cpp
-	$(HOST_CXX) -std=c++17 -O2 -Wall -o $@ $^
+	$(HOST_CXX) -std=c++20 -O2 -Wall -o $@ $^
 
 reduce_test: reduce_test.cpp $(TIM)/diag/tim_diag_reduce.cpp
-	$(HOST_CXX) -std=c++17 -O2 -Wall -o $@ $^
+	$(HOST_CXX) -std=c++20 -O2 -Wall -o $@ $^
 
 time_test: time_test.cpp $(TIM)/core/tim_time.cpp
-	$(HOST_CXX) -std=c++17 -O2 -Wall -o $@ $^
+	$(HOST_CXX) -std=c++20 -O2 -Wall -o $@ $^
 
 MGR_SRCS := manager_test.cpp \
             $(TIM)/diag/tim_diag_manager.cpp \
@@ -28,11 +28,11 @@ MGR_SRCS := manager_test.cpp \
             $(TIM)/core/tim_time.cpp \
             $(TIM)/io/tim_file.cpp \
             $(TIM)/io/tim_iosystem.cpp \
-            $(TIM)/io/tim_decomp_cache.cpp \
+            $(TIM)/io/tim_dofmap.cpp \
             $(TIM)/io/tim_backend.cpp
 
 manager_test: $(MGR_SRCS)
-	$(CXX) --std=c++17 -O0 -g -I$(PIO_ROOT)/include -o $@ $(MGR_SRCS) \
+	$(CXX) --std=c++20 -O0 -g -I$(PIO_ROOT)/include -o $@ $(MGR_SRCS) \
 	    -L$(PIO_ROOT)/lib -lpioc $(shell nc-config --libs)
 
 EXT_SRCS := extfield_test.cpp \
@@ -40,11 +40,11 @@ EXT_SRCS := extfield_test.cpp \
             $(TIM)/core/tim_time.cpp \
             $(TIM)/io/tim_file.cpp \
             $(TIM)/io/tim_iosystem.cpp \
-            $(TIM)/io/tim_decomp_cache.cpp \
+            $(TIM)/io/tim_dofmap.cpp \
             $(TIM)/io/tim_backend.cpp
 
 extfield_test: $(EXT_SRCS)
-	$(CXX) --std=c++17 -O0 -g -I$(PIO_ROOT)/include -o $@ $(EXT_SRCS) \
+	$(CXX) --std=c++20 -O0 -g -I$(PIO_ROOT)/include -o $@ $(EXT_SRCS) \
 	    -L$(PIO_ROOT)/lib -lpioc $(shell nc-config --libs)
 
 clean:

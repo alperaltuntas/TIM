@@ -2,3 +2,8 @@ pio_spike
 probe_overlap
 *.nc
 *.o[0-9]*
+probe_getvar_bcast
+blockdecomp_roundtrip
+dof_capture
+dof_identity
+dof_after.txt

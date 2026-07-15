@@ -393,6 +393,23 @@ Carrying the architecture of the plan of record with these amendments:
    implicit-context fallback is removed (abort instead).
 8. **Diag restart file becomes a CESM citizen**: rpointer + st_archive integration is
    in scope for the production pass, not a caveat.
+9. **Domain-agnostic DofMap core**: the decomp cache generalizes to a DofMap cache with
+   three factories (domain, block, replicated-policy); `Backend::Serial` demoted to
+   metadata probes; every bulk read is a striped collective. Concretely, `tim_decomp_cache`
+   becomes `tim_dofmap` (`DofMap` opaque handle + `DofMapCache`): `fromDomain` reproduces
+   the old DOF lists bit-identically (so domain-decomposed reads/writes are unchanged by
+   construction — same schedules, same bytes; verified against a captured golden),
+   `blockDecomp`/`blockDecompRange` add non-domain contiguous partitions. `File` grows
+   `readDistributed(DofMap)` as the one deep read primitive (`readDecomposed` wraps it per
+   staggered component) and `readReplicated`, whose policy is size-tiered on
+   `tim.io.replicated_read_threshold_mb` (default 8): block-collective `read_darray` +
+   `MPI_Allgatherv` at/above, a broadcasting `get_var` (verified to read-on-root-and-bcast)
+   below. `ExternalField`'s replicated branch and the scalar/1-D `readPlain` path stop
+   doing every-rank `nc_open`. Two carried-forward facts: (a) region `readSlab` stays
+   rank-independent `Backend::Serial` because MOM's regridding calls it every-PE with
+   per-PE-differing hyperslabs (collective would deadlock) — the one surviving every-rank
+   bulk read; (b) metadata/attribute/time-value queries stay every-rank (bounded, small) —
+   both are flagged follow-ups, not blockers.
 
 ### 3.3 Work decomposition — PR series on `parallelio`
 
@@ -415,18 +432,28 @@ lands; double_gyre bit-identity gate per PR, cesm_t232 at the milestone gates.
     `tim/cpp/core/tim_domain.{hpp,cpp}`;
     `test_tim/test_{config,time,decomp}.cpp`.
   - Modified: `CMakeLists.txt` (register sources; mkmf sweeps automatically).
-- **A3. `io/` spine: Backend(+Serial) + IoSystem + DecompCache + File + IoContext**,
+- **A3. `io/` spine: Backend(+Serial) + IoSystem + DofMapCache + File + IoContext**,
   one PR (one abstraction), stacked-review-friendly commits per class; C API + Fortran
-  interface; MPI ctest (round-trip, masked+symmetric decomps, FMS cross-read).
+  interface; MPI ctest (round-trip, masked+symmetric decomps, FMS cross-read). File's read
+  surface is the domain-agnostic layering: `readDistributed(DofMap)` deep primitive,
+  `readDecomposed` as its per-component wrapper, `readReplicated` (threshold-tiered
+  block-collective / broadcasting get_var). DofMapCache carries three factories
+  (fromDomain — bit-identical to the prototype decomp cache — plus blockDecomp /
+  blockDecompRange).
   - Added: `tim/cpp/io/tim_backend.{hpp,cpp}`, `tim/cpp/io/tim_iosystem.{hpp,cpp}`,
-    `tim/cpp/io/tim_decomp_cache.{hpp,cpp}`, `tim/cpp/io/tim_file.{hpp,cpp}`,
+    `tim/cpp/io/tim_dofmap.{hpp,cpp}` (was `tim_decomp_cache`, generalized),
+    `tim/cpp/io/tim_file.{hpp,cpp}`,
     `tim/cpp/io/tim_io_context.hpp`,
     `tim/cpp/io/tim_io_C_API.{h,cpp}` (+ `tim_io_C_API_internal.hpp`),
     `tim/fortran/tim_io_interface.F90`;
-    `test_tim/test_io_roundtrip.cpp` (MPI), `test_tim/test_decomp_cache.cpp`,
+    `test_tim/test_io_roundtrip.cpp` (MPI), `test_tim/test_dofmap.cpp` (fromDomain
+    DOF identity + blockDecomp round-trip + get_var broadcast semantics),
     `test_tim/test_fms_cross_read.cpp`.
   - Modified: `CMakeLists.txt`.
-- **A4. `io/ExternalField`** + its unit test (synthetic modulo-climatology fixture).
+- **A4. `io/ExternalField`** + its unit test (synthetic modulo-climatology fixture). The
+  replicated (non-domain) branch reads through `File::readReplicated` on a PIO handle
+  opened unconditionally — no more every-rank `nc_open`/`readSlab`; the test exercises both
+  threshold branches (small get_var, large block+Allgatherv) on a float field.
   - Added: `tim/cpp/io/tim_external_field.{hpp,cpp}`;
     `test_tim/test_external_field.cpp`.
   - Modified: `tim/cpp/io/tim_io_C_API.{h,cpp}`, `tim/fortran/tim_io_interface.F90`

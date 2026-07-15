@@ -150,7 +150,25 @@ int main(int argc, char** argv) {
       bool same = true;
       for (size_t q = 0; q < out.size(); ++q)
         same = same && out[q] == outr[q];
-      CHECK(same, "replicated == decomposed");
+      CHECK(same, "replicated == decomposed (small: get_var broadcast)");
+    }
+
+    // Replicated path forced ABOVE the threshold (block read_darray of a FLOAT
+    // var + MPI_Allgatherv) must match the small-branch result bit-for-bit.
+    {
+      IoSystem::Options ob;
+      ob.niotasks = 1;
+      ob.replicated_read_threshold_bytes = 1;  // force the block branch
+      IoSystem sysb(MPI_COMM_WORLD, ob);
+      ExternalField fb(sysb, "extfield_clim.nc", "salt", -1, Decomp2D(),
+                       Calendar::NoLeap);
+      CHECK(fb.ok(), fb.ok() ? "ok" : fb.error().c_str());
+      std::vector<double> outb(NX * NY);
+      CHECK(fb.interp(at(50.0), outb.data(), nullptr) == 0, "replicated block");
+      f.interp(at(50.0), out.data(), nullptr);
+      bool same = true;
+      for (size_t q = 0; q < out.size(); ++q) same = same && out[q] == outb[q];
+      CHECK(same, "replicated == decomposed (large: block + Allgatherv, float)");
     }
   }
   if (failures == 0) std::printf("ALL EXTFIELD CHECKS PASS\n");
