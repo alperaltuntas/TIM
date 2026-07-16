@@ -56,6 +56,9 @@ Decisions made:
   cores experiment (both Phase 3).
 - **C++20 adopted project-wide** (mkmf templates, CMake, this doc's conventions; verified
   on nvc++ 25.9 / icpx 2025.2.1 / g++; C++23 deferred until nvhpc support matures).
+  **CAVEAT (verified 2026-07-15): the CESM/CIME build path still compiles TIM C++ at
+  `-std=c++17`** — see "CESM build-path carry-forwards" below. Must be fixed before any
+  C++20 feature reaches the CESM build (i.e., before A2's `core/` lands in CESM).
 - **Next**: fresh `parallelio` branch, PR series per report §3.3 (track A first). No
   prototype-branch merges; no plan/report/CLAUDE.md files in production PRs.
 
@@ -381,6 +384,15 @@ one unit against the frozen spike contract — not a read-only slice extended la
 - **Write gate**: cross-matrix (FMS-write→TIM-read, TIM-write→FMS-read); exact-restart
   test (N days vs N/2+restart+N/2); `nccmp -d -m -g -f` TIM vs FMS restart — data
   bit-identical (raw doubles), metadata diffs whitelisted.
+- **Parallel-HDF5 acceptance gate (do not skip):** at least one `io/` unit test must
+  open and read+write a file through PIO's parallel netCDF-4 iotype
+  (`PIO_IOTYPE_NETCDF4P`). This is the enforcing check that the *parallel* HDF5 — not
+  Derecho's serial `hdf5` module — is actually loaded: `H5Pset_fapl_mpio` cannot succeed
+  against a serial HDF5, so a serial-HDF5 mis-load surfaces as a hard failure here rather
+  than silently producing wrong output. (A1's `test_tim` smoke test only links `libpioc`
+  and does no I/O, so it cannot enforce this — the link-time HDF5 selection there relies
+  on libnetcdf's `DT_RPATH` + `-Wl,--allow-shlib-undefined`; see Risk #2. This functional
+  gate is the standing guarantee and must land with the A3 `io/` tests.)
 
 ### Phase 2 — Diag abstractions (config, reduction engine, manager)
 - 2a: DiagConfig + diag_table parser (fixtures: verbatim double_gyre + cesm_t232
@@ -441,11 +453,60 @@ PR discipline (strangler-fig): each phase = TIM PR (dead-by-default code + unit 
 turbo-stack PR (build glue) → MOM6 PR (dispatch, default off). Flip defaults only after
 gates pass on both examples. `--infra FMS2` never touched.
 
+### CESM build-path carry-forwards (verified 2026-07-15 against turbo.cesm3_0_alpha09d.sbx)
+
+CESM builds TIM through CIME/mkmf (`libraries/FMS/Makefile.cesm` + `buildlib`), NOT
+turbo-stack's `build.sh` and NOT TIM's own CMake. So build decisions made in turbo-stack
+do not automatically apply to CESM. Confirmed already-wired in CESM: TIM is a selectable
+`MOM6_INFRA_API` (default TIM); PIO comes from the `parallelio/2.6.8` module ($PIO /
+`PIO_INCDIR`, `-lpiof -lpioc`); AMReX is built by the FMS buildlib and linked `-lamrex
+-lstdc++` after `-lfms`; fp flags are on CXX in the CESM cmake_macros (incl. gnu
+`-ffp-contract=off`). Carry-forwards the production tracks MUST handle:
+
+1. **[HIGH — track C2, blocks A2 in CESM] C++20 is not enabled in the CESM path.** CIME's
+   stock cmake_macros set `-std=c++17` for intel/gnu/nvhpc, and `Makefile.cesm` compiles
+   `tim/cpp/*.cpp` with that `CXXFLAGS`; TIM's `cxx_std_20` lives only in the CMake CESM
+   bypasses. FIX: append `-std=c++20` for the `tim/cpp` TUs in `libraries/FMS/Makefile.cesm`
+   (TIM-scoped — do NOT edit stock `ccs_config` macros, which govern all CESM C++). Must
+   land before any C++20 feature (`std::span`, designated inits, `starts_with`, `<=>`)
+   reaches the CESM build.
+2. **[MEDIUM — track A3] The C++ io layer's `libnetcdf` dependency is first-class but
+   unnamed by the PIO glue.** `tim/cpp/io/*.cpp` call `nc_*` directly, so they need
+   `libnetcdf` on the link + `netcdf.h` on the compile — not just `-lpioc`. Satisfied
+   indirectly: CMake via `PIO::PIO_C`'s interface libs (netcdf-c + pnetcdf) and includes;
+   mkmf via the template's `nc-config`; CESM via `Makefile.cesm`'s explicit `-I$(PIO_INCDIR)`
+   + netcdf. ⇒ When A3 lands the io sources it must LINK `PIO::PIO_C` into the `tim` CMake
+   target (A1 only `find_package`s it). Note `-Wl,--allow-shlib-undefined` covers only
+   libnetcdf's *transitive* HDF5 symbols, NOT the io objects' own `nc_*` refs.
+3. **[LOW — track C2/A3] CESM's `buildlib` hard-codes the `tim/cpp` subdir list**
+   (`core`/`io`/`diag`) because CIME mkmf is non-recursive. A new *nested* C++ dir
+   (e.g. `tim/cpp/io/backends`) is auto-swept by turbo-stack mkmf but silently missed by
+   CESM unless added to that list.
+4. **[LOW — Phase 3] AMReX is built by its own `Release` CMake in both build systems and
+   does NOT inherit the fp flags** (`-fp-model`/`-no-fma`/`-Kieee`/`-ffp-contract=off`).
+   A bit-reproducibility consideration for AMReX-side reductions; match the flags in the
+   AMReX cmake invocation if strict cross-build bit-identity is needed.
+5. **[LOW — track A3] `test_mom/common/` fixture loader is `namespace test_mom`.** When A3
+   reuses it in `test_tim`, refactor it to a neutral, jointly-owned namespace (not
+   `test_mom`, not `test_tim`) so neither test project "owns" the shared scaffolding.
+
 ## Risks
 1. FMS averaging-window edge semantics ((t0,t1] boundaries, average_T1/T2, month rollover)
    — biggest behavioral risk; mitigated by capture/replay oracle + A/B runs.
 2. Wrong PIO build (mpi-serial hash) / netCDF-HDF5 stack mismatch — module-resolve under
-   the same ncarenv stack; assert parallel capability at init.
+   the same ncarenv stack; assert parallel capability at init. **Verified concretely
+   (2026-07-15, A1):** on Derecho the `hdf5/1.14.6` module resolves to the SERIAL build
+   (hash `fr4a`, no `H5Pset_*_mpio`); PIO's netCDF is the cray-mpich PARALLEL build (`rlvr`),
+   which needs the matching parallel HDF5 (`s3we`). Two consequences for I/O code
+   (Phase 1 / track A3): (a) the production mkmf link works because the ncarcompilers
+   wrappers + libnetcdf's baked `DT_RPATH` pull the parallel HDF5, but a standalone CMake
+   test linking `libpioc` must NOT re-derive HDF5 by hand (an `ldd`/regex scrape is
+   fragile) — instead link with `-Wl,--allow-shlib-undefined` and let libnetcdf's
+   `DT_RPATH` resolve its own HDF5 at load time. That RPATH is searched BEFORE
+   `LD_LIBRARY_PATH`, so the serial `hdf5` module (which sits on `LD_LIBRARY_PATH`) cannot
+   hijack it — verified: the test binary loads `s3we`, not `fr4a`. (b) RPATH ordering is
+   the *static* guarantee; the *functional* guarantee is the parallel-HDF5 acceptance gate
+   in Phase 1 — a serial-HDF5 mis-load fails there loudly rather than silently.
 3. Masked PE layouts + symmetric staggered +1 sizes in decomp dofs — dedicated unit tests;
    cross-check global dims vs FMS-written files.
 4. PIO append to FMS-written files & collective put_var discipline for scalars — spike
