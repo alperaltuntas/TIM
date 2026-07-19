@@ -6,11 +6,10 @@
 
 #include "tim_time.hpp"
 
-#include <AMReX.H>
+#include "tim_error.hpp"
 
 #include <climits>
 #include <cstdio>
-#include <cstdlib>
 #include <string>
 
 namespace TIM {
@@ -24,12 +23,6 @@ constexpr int kDaysPerMonth[13] = {0, 31, 28, 31, 30, 31, 30,
 // Fortran floor(a/real(b)) and modulo(a,b) for b > 0.
 int floorDiv(int a, int b) { return (a >= 0) ? a / b : -((-a + b - 1) / b); }
 int floorMod(int a, int b) { return a - floorDiv(a, b) * b; }
-
-[[noreturn]] void fatal(const std::string& what) {
-  // todo: add a TIM-wide error-handling policy.
-  amrex::Abort("TIM::Time: " + what);
-  std::abort();  // amrex::Abort is not marked [[noreturn]]; make the contract hold
-}
 
 std::string dateStr(const Date& d) {
   // todo: switch to std::format once it's available across compilers.

@@ -22,6 +22,7 @@ if(NOT TARGET AMReX::amrex)
 endif()
 
 add_library(tim STATIC
+    core/tim_error.cpp
     core/tim_time.cpp
     tim_coms_infra.cpp
     tim_coms_infra_C_API.cpp
