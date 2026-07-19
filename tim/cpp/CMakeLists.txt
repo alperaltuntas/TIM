@@ -22,15 +22,21 @@ if(NOT TARGET AMReX::amrex)
 endif()
 
 add_library(tim STATIC
+    core/tim_time.cpp
     tim_coms_infra.cpp
     tim_coms_infra_C_API.cpp
     tim_profile.cpp
 )
 add_library(TIM::tim ALIAS tim)
 
-target_include_directories(tim PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
-    $<INSTALL_INTERFACE:include/tim>)
+target_sources(tim PUBLIC
+    FILE_SET HEADERS
+    BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
+    FILES
+      tim_coms_infra.hpp
+      tim_coms_infra_C_API.h
+      tim_profile.hpp
+      core/tim_time.hpp)
 
 # tim's C++ object files and AMReX::amrex reference the C++ standard
 # library (e.g. __cxa_call_terminate). Position the runtime *after*
@@ -53,12 +59,8 @@ option(TIM_CPP_INSTALL "Install the tim library and its headers" ${PROJECT_IS_TO
 if(TIM_CPP_INSTALL)
   install(TARGETS tim
     EXPORT TIMExports
+    FILE_SET HEADERS DESTINATION include/tim
     RUNTIME DESTINATION bin
     LIBRARY DESTINATION lib
     ARCHIVE DESTINATION lib)
-  install(FILES
-      tim_coms_infra.hpp
-      tim_coms_infra_C_API.h
-      tim_profile.hpp
-      DESTINATION include/tim)
 endif()

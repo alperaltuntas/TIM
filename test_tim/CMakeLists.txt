@@ -31,26 +31,20 @@ if(AMReX_GPU_BACKEND STREQUAL "CUDA")
   enable_language(CUDA)
 endif()
 
-add_executable(test_tim_smoke
-  test_tim_main.cpp
-  smoke/test_smoke.cpp
-)
-
-target_link_libraries(test_tim_smoke
-  GTest::gtest
-  tim
-  PIO::PIO_C
-)
-
-if(AMReX_GPU_BACKEND STREQUAL "CUDA")
-  set_source_files_properties(
-    test_tim_main.cpp
-    smoke/test_smoke.cpp
-    PROPERTIES LANGUAGE CUDA)
-endif()
-
 include(GoogleTest)
 
-gtest_discover_tests(test_tim_smoke
-  DISCOVERY_MODE PRE_TEST
-  PROPERTIES LABELS "unit")
+# One TIM gtest executable: always links tim + GTest and the shared main;
+# LINK adds per-target deps (e.g. PIO for the smoke test).
+function(tim_add_test name)
+  cmake_parse_arguments(T "" "" "SOURCES;LINK" ${ARGN})
+  add_executable(${name} test_tim_main.cpp ${T_SOURCES})
+  target_link_libraries(${name} GTest::gtest tim ${T_LINK})
+  if(AMReX_GPU_BACKEND STREQUAL "CUDA")
+    set_source_files_properties(test_tim_main.cpp ${T_SOURCES}
+      PROPERTIES LANGUAGE CUDA)
+  endif()
+  gtest_discover_tests(${name} DISCOVERY_MODE PRE_TEST PROPERTIES LABELS "unit")
+endfunction()
+
+tim_add_test(test_tim_smoke SOURCES smoke/test_smoke.cpp LINK PIO::PIO_C)
+tim_add_test(test_tim_core SOURCES test_time.cpp)
