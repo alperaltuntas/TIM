@@ -62,6 +62,38 @@ Decisions made:
 - **Next**: fresh `parallelio` branch, PR series per report §3.3 (track A first). No
   prototype-branch merges; no plan/report/CLAUDE.md files in production PRs.
 
+### Production progress + interface decisions of record (2026-07-19)
+
+- **A1 landed** (`parallelio` @ `c978b9cb`): `find_package(PIO)`, `test_tim/` ctest
+  scaffold + smoke tests; turbo-stack build glue on its own `parallelio` branch.
+- **A2 in progress — Time landed** (`192d9928`): `TIM::Time` calendar math, 15
+  oracle/roundtrip unit tests (exhaustive over each calendar's full repeat cycle).
+  Decisions of record (deviations from the architecture sketch below, which is kept
+  as the historical design sketch — this list wins on conflict):
+  - Names are `Time`/`Date`, not `TimeStamp{days,seconds,ticks}`/`DateFields`.
+  - **No ticks field.** Production MOM6 never calls `set_ticks_per_second` (only its
+    file-parser unit tests do; at the FMS default 1 tick/s the ticks component is
+    always 0). MOM6's `get/set_ticks_per_second` accessors keep routing to the
+    Fortran time_manager during coexistence. Revisit only if sub-second coupling
+    ever materializes.
+  - **Single-unit `addInterval` is the public increment surface**; FMS's combined
+    `(years, months)` `increment_date` stays internal. No reachable divergence in
+    this project's scope: the only mixed-unit call sites in MOM6 (solo / ice-shelf
+    driver namelist run lengths) stay on the Fortran time_manager for the life of
+    this project. The corner (Feb-29 base + mixed years/months, where FMS's
+    simultaneous normalization rescues the date and sequential composition aborts)
+    becomes reachable only if the Fortran time_manager is retired — then expose the
+    internal `incrementDate(years, months)` (two-line change).
+  - `leapYear`/`daysInMonth`/`get_time_string` kept private until a consumer demands
+    them (first candidate: diag `%4yr-%2mo` file naming in the diag track).
+- **Error-handling policy sharpened** (TIM CLAUDE.md, 2026-07-19): no C++ exceptions
+  anywhere — TIM's two client kinds (bind(C) Fortran, where an escaping exception is
+  UB, and direct C++ callers) are both bound by the MPI-collective argument (a
+  throwing rank hangs the job instead of failing it) plus device code and the
+  abort-based ecosystem (AMReX, FMS FATAL). Unrecoverable → `amrex::Abort` with a
+  descriptive message; genuinely optional outcomes → `std::optional<T>`; bool +
+  out-pointer reserved for the extern "C" layer only.
+
 ### Scope accounting — this project vs the total FMS replacement
 
 Line counts of the FMS surface MOM6 needs (subsystem dirs in this fork; wrapper files
