@@ -86,6 +86,42 @@ Decisions made:
     internal `incrementDate(years, months)` (two-line change).
   - `leapYear`/`daysInMonth`/`get_time_string` kept private until a consumer demands
     them (first candidate: diag `%4yr-%2mo` file naming in the diag track).
+- **A2 continued — IoDecomp landed (2026-07-19)**: `TIM::IoDecomp` decomposition
+  geometry (`cfb231a1`; shared `TIM::fatal` helper in `core/tim_error`, `7e47dad1`).
+  Property-tested: writeComponents proven an exactly-once partition by brute-force
+  paint-and-count over all staggers × symmetric/non-symmetric × masked layouts
+  (holes, checkerboards, single survivors, 1-cell tiles). Decisions of record:
+  - **Name/location: `TIM::IoDecomp` in `tim/cpp/io/`**, not `Decomp2D` in
+    `core/tim_domain` as sketched below. Rationale: it is I/O-facing vocabulary
+    ("where is my slab in global file index space"); the eventual AMReX-based
+    computational-domain module is a separate producer of these values, never a
+    consumer dependency. The domain supplies data-placement facts; the io layer
+    owns write policy (iotasks/rearranger). Consumers see only IoDecomp + DofMaps.
+  - **Mask-aware write-edge ownership is a deliberate behavioral improvement over
+    the prototype**: shared staggered edges bordering eliminated (all-land) tiles
+    are claimed by a live neighbor instead of becoming file fill holes (the
+    prototype's geolat_c holes). Ownership: compute-window owner if live, else the
+    north-most-then-east-most live tile that can reach the point through its own
+    edge pieces. `writeComponents` returns up to 4 disjoint pieces where the
+    prototype's `writePartition` was one extended rectangle.
+  - **A3 GATE CONSEQUENCE (important):** the prototype DOF bit-identity oracle
+    (`dof_golden`) now applies to READ maps only — `readComponents` is
+    piece-for-piece identical to the prototype's. Write-side DOF lists deliberately
+    differ (piece structure everywhere; content at masked edges). Write validation
+    moves to file level: double_gyre / cesm_t232 `nccmp` vs FMS, where the edge fix
+    should improve FMS parity, not degrade it.
+  - **Halo/data window deliberately NOT carried.** The prototype seam contract
+    stands: window-sized buffers cross the bind(C) boundary; buffer strides are
+    consumed by the File pack loop (`window(stagger)`), never by the DofMap (DOF
+    lists are dense). The halo-crossing seam (C++ strides halo-padded arrays;
+    eliminates hidden Fortran slice temporaries) is a known alternative — adopting
+    it later is a recorded design change requiring `dataWindow(stagger)` + a
+    per-call buffer window on the write path, since MOM6 passes both compute- and
+    data-sized arrays call by call.
+  - `io_layout` is carried as a bridged decomposition fact ("iotask policy input").
+    OPEN (decide in A3): whether a user-set `IO_LAYOUT` ≠ 1×1 becomes the default
+    iotasks count, or the `tim.io` config knob is the sole authority and the field
+    is dropped. `comm` is carried for A3's iosystem (`Init_Intracomm`) — decided.
 - **Error-handling policy sharpened** (TIM CLAUDE.md, 2026-07-19): no C++ exceptions
   anywhere — TIM's two client kinds (bind(C) Fortran, where an escaping exception is
   UB, and direct C++ callers) are both bound by the MPI-collective argument (a

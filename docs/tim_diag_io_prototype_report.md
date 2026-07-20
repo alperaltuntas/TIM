@@ -451,14 +451,21 @@ lands; double_gyre bit-identity gate per PR, cesm_t232 at the milestone gates.
     `tim/cpp/core/tim_domain.{hpp,cpp}`;
     `test_tim/test_{config,time,decomp}.cpp`.
   - Modified: `CMakeLists.txt` (register sources; mkmf sweeps automatically).
+  - As landed (2026-07-19, see the plan's decisions-of-record): Time = `192d9928`
+    (`Time`/`Date`, no ticks); the decomposition type is `TIM::IoDecomp` in
+    `tim/cpp/io/tim_io_decomp.{hpp,cpp}` = `cfb231a1` (io-facing vocabulary, not
+    `core/tim_domain` as sketched here); shared fatal helper `core/tim_error` =
+    `7e47dad1`. Config remains.
 - **A3. `io/` spine: Backend(+Serial) + IoSystem + DofMapCache + File + IoContext**,
   one PR (one abstraction), stacked-review-friendly commits per class; C API + Fortran
   interface; MPI ctest (round-trip, masked+symmetric decomps, FMS cross-read). File's read
   surface is the domain-agnostic layering: `readDistributed(DofMap)` deep primitive,
   `readDecomposed` as its per-component wrapper, `readReplicated` (threshold-tiered
   block-collective / broadcasting get_var). DofMapCache carries three factories
-  (fromDomain — bit-identical to the prototype decomp cache — plus blockDecomp /
-  blockDecompRange).
+  (fromDomain — bit-identical to the prototype decomp cache for READ maps; write-side
+  DOFs deliberately differ since IoDecomp's mask-aware writeComponents supersedes the
+  prototype's single writePartition rectangle, so write validation is file-level
+  nccmp vs FMS — plus blockDecomp / blockDecompRange).
   - Added: `tim/cpp/io/tim_backend.{hpp,cpp}`, `tim/cpp/io/tim_iosystem.{hpp,cpp}`,
     `tim/cpp/io/tim_dofmap.{hpp,cpp}` (was `tim_decomp_cache`, generalized),
     `tim/cpp/io/tim_file.{hpp,cpp}`,
