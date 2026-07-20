@@ -24,6 +24,7 @@ endif()
 add_library(tim STATIC
     core/tim_error.cpp
     core/tim_time.cpp
+    io/tim_io_decomp.cpp
     tim_coms_infra.cpp
     tim_coms_infra_C_API.cpp
     tim_profile.cpp
@@ -37,7 +38,8 @@ target_sources(tim PUBLIC
       tim_coms_infra.hpp
       tim_coms_infra_C_API.h
       tim_profile.hpp
-      core/tim_time.hpp)
+      core/tim_time.hpp
+      io/tim_io_decomp.hpp)
 
 # tim's C++ object files and AMReX::amrex reference the C++ standard
 # library (e.g. __cxa_call_terminate). Position the runtime *after*

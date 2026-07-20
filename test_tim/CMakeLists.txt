@@ -47,4 +47,4 @@ function(tim_add_test name)
 endfunction()
 
 tim_add_test(test_tim_smoke SOURCES smoke/test_smoke.cpp LINK PIO::PIO_C)
-tim_add_test(test_tim_core SOURCES test_time.cpp)
+tim_add_test(test_tim_core SOURCES test_time.cpp test_decomp.cpp)
