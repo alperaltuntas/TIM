@@ -152,7 +152,8 @@ public:
     /// which is fatal.
     /// @note Increments do not decompose: add_months(cal, 2) from Jan 31
     /// succeeds where add_months(cal, 1) twice aborts on the intermediate.
-    /// Pass the full offset in one call rather than stepping.
+    /// Pass the full offset in one call rather than stepping. For an offset
+    /// in both units, call add_years_and_months.
     Time add_months(Calendar cal, int n) const;
 
     /// @brief This time advanced by @p n years, keeping the month and day.
@@ -162,6 +163,15 @@ public:
     /// @note As with add_months, the day of month is kept as-is: Feb 29 + 1
     /// year is 2025-02-29, which aborts.
     Time add_years(Calendar cal, int n) const;
+
+    /// @brief This time advanced by @p years years and @p months months,
+    /// keeping the day of month. This combines add_years and add_months,
+    /// but checks only the final result.
+    /// @param cal The calendar deciding what a year and a month are.
+    /// @param years Year count; negative allowed.
+    /// @param months Month count; negative allowed.
+    /// @return The advanced point.
+    Time add_years_and_months(Calendar cal, int years, int months) const;
 
 private:
     Duration since_base_{};  ///< Signed exact span from the calendar base date (seconds).

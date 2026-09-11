@@ -127,8 +127,8 @@ YearDoy split_year(const Calendar cal, const std::int64_t days) {
 }
 
 // Shift time t by whole calendar years and months, keeping day and clock time.
-Time add_calendar_interval(const Time t, const Calendar cal, const std::int64_t years,
-                           const std::int64_t months, const char* const who) {
+Time shift_calendar_units(const Time t, const Calendar cal, const std::int64_t years,
+                          const std::int64_t months, const char* const who) {
     if (cal == Calendar::NoCalendar)
         TIM::abort(std::string("TIM::Time::") + who + ": undefined for NO_CALENDAR.");
     Date d = t.to_date(cal);
@@ -216,11 +216,15 @@ Date Time::to_date(const Calendar cal) const {
 }
 
 Time Time::add_months(const Calendar cal, const int n) const {
-    return add_calendar_interval(*this, cal, 0, n, "add_months");
+    return shift_calendar_units(*this, cal, 0, n, "add_months");
 }
 
 Time Time::add_years(const Calendar cal, const int n) const {
-    return add_calendar_interval(*this, cal, n, 0, "add_years");
+    return shift_calendar_units(*this, cal, n, 0, "add_years");
+}
+
+Time Time::add_years_and_months(const Calendar cal, const int years, const int months) const {
+    return shift_calendar_units(*this, cal, years, months, "add_years_and_months");
 }
 
 }  // namespace TIM

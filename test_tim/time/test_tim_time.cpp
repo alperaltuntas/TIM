@@ -134,6 +134,35 @@ TEST(TimeDeathTest, TimeBeforeBaseDateHasNoDate) {
                  "precedes the calendar base date \\(0001-01-01\\) by 1 s");
 }
 
+// A combined offset is one call because the two separate ones each check their
+// own result, and the day of month can fail a check part-way through that the
+// final date passes. Feb 29 is the case: 2025-02-29 (years first) and
+// 2023-02-29 (months first) do not exist, but both end points do.
+TEST(Time, YearsAndMonthsTakenInOneCall) {
+    const Calendar cal = Calendar::Gregorian;
+    const Time leap = Date{2024, 2, 29}.to_time(cal);
+    EXPECT_EQ(leap.add_years_and_months(cal, 1, 1).to_date(cal), (Date{2025, 3, 29}));
+    EXPECT_EQ(leap.add_years_and_months(cal, 1, 2).to_date(cal), (Date{2025, 4, 29}));
+    const Time jan29 = Date{2023, 1, 29}.to_time(cal);
+    EXPECT_EQ(jan29.add_years_and_months(cal, 1, 1).to_date(cal), (Date{2024, 2, 29}));
+    // Both orders of the separate calls abort on this one; the end point exists
+    // because 2024+3 and 2024+5 are common years but 2032 is a leap year.
+    EXPECT_EQ(leap.add_years_and_months(cal, 5, 36).to_date(cal), (Date{2032, 2, 29}));
+    // Negative offsets borrow across the year end, as in add_months.
+    const Time jun15 = Date{2024, 6, 15}.to_time(cal);
+    EXPECT_EQ(jun15.add_years_and_months(cal, -3, -7).to_date(cal), (Date{2020, 11, 15}));
+}
+
+// The single-unit forms are the combined one with the other count zeroed.
+TEST(Time, YearsAndMonthsAgreesWithTheSingleUnitForms) {
+    const Calendar cal = Calendar::Gregorian;
+    const Time t = Date{2024, 6, 15}.to_time(cal);
+    for (int n = -30; n <= 30; ++n) {
+        EXPECT_EQ(t.add_months(cal, n), t.add_years_and_months(cal, 0, n)) << n;
+        EXPECT_EQ(t.add_years(cal, n), t.add_years_and_months(cal, n, 0)) << n;
+    }
+}
+
 // The enumerator values are the FMS time_manager parameters, so the bridge can
 // pass get_calendar_type() straight through.
 TEST(Calendar, MatchesFmsParameterValues) {
