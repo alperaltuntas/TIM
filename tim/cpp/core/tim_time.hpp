@@ -94,6 +94,11 @@ public:
     // the result is the same point in every calendar. Only the conversions
     // below (to_date, add_months, add_years) have to know what a month is.
     //
+    // Stick to chrono arithmetic for the exact units (24h, days{2}), but use
+    // add_months and add_years for months and years, which are not exact:
+    // std::chrono defines those two as averages (30.436875 and 365.2425 days),
+    // so t + months{1} compiles and lands off midnight on the wrong day.
+    //
     // Time deliberately has no operator* or operator/, which FMS provides on
     // time_type: scaling and dividing are span operations, and std::chrono
     // already supplies them on Duration.
